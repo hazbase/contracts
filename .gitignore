@@ -1,0 +1,54 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+node_modules
+build
+.memo
+/.pnp
+/.nova
+.pnp.js
+
+# testing
+*/coverage
+
+# production
+*/build
+*/dist
+artifacts
+cache
+typechain-types
+typechain-types2
+scripts
+
+# misc
+.DS_Store
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.Verifier.sol
+
+# credential
+serviceAccountKey.json
+
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+firebase-debug.log*
+
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+*.ptau
+*.zkey
+
+.firebase/
+.env.production
+
+/functions/hosting/*

@@ -1,0 +1,9 @@
+Project: Token Market Contracts and ZK Circuits
+Copyright (c) 2025 <IndieSquare, Inc>
+
+This product includes third-party components:
+- OpenZeppelin Contracts (MIT)
+- circomlib (MIT)
+- snarkjs (MIT)
+
+Licensed under the Apache License, Version 2.0. See LICENSE for details.

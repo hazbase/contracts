@@ -71,6 +71,7 @@ template UnifiedCredential(depth) {
     signal input addr;       // wallet address (uint)
     signal input threshold;
     signal input leaf;       // KYC hash (Poseidon of KYC data + salt)
+    signal input domain;    // private input (domain separator)
     
     /*──────────── private inputs ───────────*/
     signal input idNull;             // user‑secret for nullifier uniqueness
@@ -99,9 +100,10 @@ template UnifiedCredential(depth) {
     commitLeaf === leaf;
 
     /* 1. bind leaf ↔ addr */
-    component h = Poseidon(2);
+    component h = Poseidon(3);
     h.inputs[0] <== commitLeaf;
     h.inputs[1] <== addr;
+    h.inputs[2] <== domain;
     signal hashOut <== h.out;
 
     /* 2. prove inclusion */

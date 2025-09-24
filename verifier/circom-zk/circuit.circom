@@ -115,22 +115,54 @@ template UnifiedCredential(depth) {
         inc.indices[i]  <== pathPos[i];
     }
 
-    component ge = GEQ32();   // a ≥ b
-    component le = GEQ32();   // b ≥ a  ⇒ a ≤ b
-    ge.a <== score;    ge.b <== threshold;
-    le.a <== threshold; le.b <== score;
+    // ---- Base comparisons ----
+    component ge = GEQ32();            // a ≥ b
+    ge.a <== score;
+    ge.b <== threshold;
 
-    signal isEq <== ge.out * le.out;
+    component le = GEQ32();            // b ≥ a  ⇒ a ≤ b
+    le.a <== threshold;
+    le.b <== score;
 
-    component is0 = IsZero();  is0.in <== mode;           // mode == 0
-    component is1 = IsZero();  is1.in <== mode - 1;
-    component is2 = IsZero();  is2.in <== mode - 2;
-    component is3 = IsZero();  is3.in <== mode - 3;
+    component eqz = IsZero();          // equality test
+    eqz.in <== score - threshold;
 
-    signal cond1 <== is1.out * ge.out;     // ≥
-    signal cond2 <== is2.out * le.out;     // ≤
-    signal cond3 <== is3.out * isEq;       // =
-    signal cond  <== cond1 + cond2 + cond3 + is0.out;
+    signal isEq <== eqz.out;           // 1 ⇔ score == threshold
+    signal gt  <== ge.out * (1 - isEq);// 1 ⇔ score >  threshold
+    signal lt  <== le.out * (1 - isEq);// 1 ⇔ score <  threshold
+
+    // ---- Decode `mode` as bit flags (GT=1, LT=2, EQ=4) ----
+    component mb = Num2Bits(8);
+    mb.in <== mode;
+
+    signal bitGT <== mb.out[0];        // bit 0
+    signal bitLT <== mb.out[1];        // bit 1
+    signal bitEQ <== mb.out[2];        // bit 2
+
+    // Safety: enforce higher bits to be zero (reject unexpected flags)
+    mb.out[3] === 0;
+    mb.out[4] === 0;
+    mb.out[5] === 0;
+    mb.out[6] === 0;
+    mb.out[7] === 0;
+
+    // ---- Satisfy if ANY selected relation holds (logical OR) ----
+    signal selGT <== bitGT * gt;       // GT selected AND true
+    signal selLT <== bitLT * lt;       // LT selected AND true
+    signal selEQ <== bitEQ * isEq;     // EQ selected AND true
+
+    // anySel1 = selGT OR selLT
+    signal anySel1 <== selGT + selLT - selGT * selLT;
+
+    // anySel  = anySel1 OR selEQ
+    signal anySel  <== anySel1 + selEQ - anySel1 * selEQ;
+
+    // Optional: mode==0 means unconditional pass (keep if you want legacy behavior)
+    component is0 = IsZero();
+    is0.in <== mode;
+
+    // Final constraint: pass if (mode==0) OR (any selected relation holds)
+    signal cond <== is0.out + anySel;
     cond === 1;
 
     /* 3. compute & expose nullifier */

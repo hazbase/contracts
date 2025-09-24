@@ -476,7 +476,7 @@ contract MultiTrustCredential is
         if (op == 0) {
             require(mask == 0, "not KYC metric");
         } else {
-            require(mask & (1 << (op - 1)) != 0, "op not allowed");
+            require((mask & op) == op, "op not allowed");
         }
 
         ok = verifier.verifyProof(a, b, c, pubSignals);

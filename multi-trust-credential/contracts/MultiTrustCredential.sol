@@ -42,13 +42,17 @@ interface IVerifier {
 /*────────────────────────── Operator mask helpers ─────────────────────────*/
 /**
  * @dev Bit mask for allowed comparison operators in zk checks.
- * GTE=1, LTE=2, EQ=4; combinations allowed (e.g., 1|4).
+ * GT=1, LT=2, EQ=4 .. combinations allowed (e.g., 1|4).
  */
 library CompareMask {
-    uint8 internal constant NONE = 0; // EQ only (placeholder)
-    uint8 internal constant GTE  = 1;
-    uint8 internal constant LTE  = 2;
+    uint8 internal constant NONE = 0; // KYC only
+    uint8 internal constant GT   = 1;
+    uint8 internal constant LT   = 2;
+    uint8 internal constant NEQ  = 3; // GT | LT
     uint8 internal constant EQ   = 4;
+    uint8 internal constant GTE  = 5; // GT | EQ
+    uint8 internal constant LTE  = 6; // LT | EQ
+    uint8 internal constant ALL  = 7; // GT | LT | EQ
 }
 
 /**  @title MultiTrustCredential

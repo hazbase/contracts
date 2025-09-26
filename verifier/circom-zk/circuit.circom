@@ -71,11 +71,11 @@ template UnifiedCredential(depth) {
     signal input addr;       // wallet address (uint)
     signal input threshold;
     signal input leaf;       // KYC hash (Poseidon of KYC data + salt)
-    signal input domain;    // private input (domain separator)
     
     /*──────────── private inputs ───────────*/
-    signal input idNull;             // user‑secret for nullifier uniqueness
-    signal input path[depth];        // Merkle siblings
+    signal input domain;         // private input (domain separator)
+    signal input idNull;         // user‑secret for nullifier uniqueness
+    signal input path[depth];    // Merkle siblings
     signal input pathPos[depth]; // 0 = left, 1 = right
 
     signal input score;
@@ -173,4 +173,11 @@ template UnifiedCredential(depth) {
 }
 
 // depth = 20 (2^20 leaves ≈ 1M entries)
-component main {public [mode, root, nullifier, addr, threshold, leaf]} = UnifiedCredential(20);
+component main {public [
+    mode,
+    root,
+    nullifier,
+    addr,
+    threshold,
+    leaf
+]} = UnifiedCredential(20);

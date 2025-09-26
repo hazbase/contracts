@@ -45,14 +45,17 @@ interface IVerifier {
  * GT=1, LT=2, EQ=4 .. combinations allowed (e.g., 1|4).
  */
 library CompareMask {
-    uint8 internal constant NONE = 0; // KYC only
-    uint8 internal constant GT   = 1;
-    uint8 internal constant LT   = 2;
-    uint8 internal constant NEQ  = 3; // GT | LT
-    uint8 internal constant EQ   = 4;
-    uint8 internal constant GTE  = 5; // GT | EQ
-    uint8 internal constant LTE  = 6; // LT | EQ
-    uint8 internal constant ALL  = 7; // GT | LT | EQ
+    // Bit flags (base)
+    uint16 internal constant GT  = 1 << 0; // 0b0001
+    uint16 internal constant LT  = 1 << 1; // 0b0010
+    uint16 internal constant EQ  = 1 << 2; // 0b0100
+    uint16 internal constant IN  = 1 << 3; // 0b1000 (allowlist membership)
+    // Aliases / composites
+    uint16 internal constant NONE = 0;           // KYC-only (no compare)
+    uint16 internal constant NE   = GT | LT;     // not equal
+    uint16 internal constant GTE  = GT | EQ;
+    uint16 internal constant LTE  = LT | EQ;
+    uint16 internal constant ALL  = GT | LT | EQ;
 }
 
 /**  @title MultiTrustCredential
@@ -98,29 +101,30 @@ contract MultiTrustCredential is
      * - `value`     : current numeric value (or placeholder if commitment-only)
      * - `leafFull`  : commitment/hash (circuit-dependent)
      * - `timestamp` : last update time (seconds)
+     * - `expiresAt` : deadline of this metric.
      */
-    struct Metric { uint32 value; uint256 leafFull; uint32 timestamp; }
+    struct Metric { uint32 value; uint256 leafFull; uint32 timestamp; uint32 expiresAt; }
 
     /**
      * @dev Input for single mint.
      * - `uri` is set as tokenURI on first mint for the address.
      */
-    struct MetricInput  { bytes32 metricId; uint32 value; uint256 leafFull; string uri; }
+    struct MetricInput  { bytes32 metricId; uint32 value; uint256 leafFull; string uri; uint32 expiresAt; }
 
     /**
      * @dev Input for an update; `deadline` kept for future EIP-712 support (not enforced here).
      */
-    struct MetricUpdate { bytes32 metricId; uint32 newValue; uint256 leafFull; uint256 deadline; }
+    struct MetricUpdate { bytes32 metricId; uint32 newValue; uint256 leafFull; uint32 expiresAt; }
 
     /**
      * @dev Batch mint item; creates token if absent and sets tokenURI on first write.
      */
-    struct MintItem { address to; bytes32 metricId; uint32 value; uint256 leafFull; string uri; }
+    struct MintItem { address to; bytes32 metricId; uint32 value; uint256 leafFull; string uri; uint32 expiresAt; }
 
     /**
      * @dev Batch update item for an existing token.
      */
-    struct UpdateItem { uint256 tokenId; bytes32 metricId; uint32 newValue; uint256 leafFull; }
+    struct UpdateItem { uint256 tokenId; bytes32 metricId; uint32 newValue; uint256 leafFull; uint32 expiresAt; }
 
     /// @dev tokenId => (metricId => Metric)
     mapping(uint256 => mapping(bytes32 => Metric)) private _metrics;
@@ -147,6 +151,7 @@ contract MultiTrustCredential is
 
     /// @notice External verifier contract for zk proof checks.
     IVerifier public verifier;
+    IVerifier public gVerifier;
 
     /*────────────────── Events ─────────────────*/
     event MetricRegistered(bytes32 indexed id, string label, bytes32 role, uint8 mask);
@@ -155,6 +160,7 @@ contract MultiTrustCredential is
     event Slash(uint256 indexed tokenId, bytes32 indexed metricId, uint32 penalty);
     event CompareMaskChanged(bytes32 indexed id, uint8 oldMask, uint8 newMask, address indexed editor);
     event VerifierSet(address verifier);
+    event GroupVerifierSet(address verifier);
     event MaskFrozenSet(bytes32 id, bool frozen);
 
     /*────────────────── Init ───────────────────*/
@@ -167,23 +173,18 @@ contract MultiTrustCredential is
     /**
      * @notice Initialize the credential system.
      * @param admin       Admin address for RolesCommon (granted admin/pauser/… as configured there).
-     * @param _verifier   ZK verifier contract address.
      * @param forwarders  Trusted ERC-2771 forwarders for meta-transactions.
      *
      * @dev
      * - Sets token name/symbol: "MultiTrust Credential" / "MTC".
-     * - Emits `VerifierSet`.
      */
-    function initialize(address admin, address _verifier, address[] calldata forwarders) external initializer {
+    function initialize(address admin, address[] calldata forwarders) external initializer {
         __ERC721_init("MultiTrust Credential", "MTC");
         __Pausable_init();
         __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
         __ERC2771Context_init(forwarders);
         __RolesCommon_init(admin);
-
-        verifier = IVerifier(_verifier);
-        emit VerifierSet(_verifier);
     }
 
     /*────────────────── Registry ───────────────*/
@@ -194,12 +195,12 @@ contract MultiTrustCredential is
      * @param label      UI label (non-empty).
      * @param roleName   Writer role required to mint/update this metric.
      * @param commitment If true, treat as commitment metric (hash-only semantics).
-     * @param mask       Allowed comparison ops bitmask (0..7; GTE=1, LTE=2, EQ=4).
+     * @param mask       Allowed comparison ops bitmask (0..8; GTE=1, LTE=2, EQ=4).
      *
      * @dev Fails if the metric id already exists. Emits `MetricRegistered`.
      *
      * @custom:reverts MTC: metric exists if the id was already registered
-     * @custom:reverts bad mask           if mask > 7
+     * @custom:reverts bad mask           if mask > 8
      * @custom:reverts MTC: empty label   if label has zero length
      * @custom:reverts empty writer role  if roleName == 0x0
      */
@@ -216,7 +217,7 @@ contract MultiTrustCredential is
             "MTC: metric exists"
         );
         require(roleName != bytes32(0), "empty writer role");
-        require(mask <= 7, "bad mask");
+        require(mask <= 8, "bad mask");
         require(bytes(label).length > 0, "MTC: empty label");
 
         metricRole[id]         = roleName;
@@ -243,21 +244,21 @@ contract MultiTrustCredential is
     /**
      * @notice Update the allowed comparison mask for a metric.
      * @param id   Metric id.
-     * @param mask New mask (0..7; bitwise OR of CompareMask flags).
+     * @param mask New mask (0..8; bitwise OR of CompareMask flags).
      *
      * @dev Caller must hold the metric’s writer role; contract must not be paused.
      *      Respects `maskFrozen`: when frozen, updates are blocked.
      *
      * @custom:reverts metric unregistered if id not registered
      * @custom:reverts role              if caller lacks metric writer role
-     * @custom:reverts bad mask          if mask > 7
+     * @custom:reverts bad mask          if mask > 8
      * @custom:reverts mask frozen       if admin has frozen updates for this metric
      */
     function setCompareMask(bytes32 id, uint8 mask) external whenNotPaused {
         _assertRegistered(id);
         require(!maskFrozen[id], "mask frozen");
         require(hasRole(metricRole[id], _msgSender()), "role");
-        require(mask <= 7, "bad mask");
+        require(mask <= 8, "bad mask");
 
         uint8 old = compareMask[id];
         if (old == mask) return;
@@ -280,7 +281,7 @@ contract MultiTrustCredential is
     /**
      * @notice Mint a credential token for `to` (if absent) and set a metric.
      * @param to    Recipient address. tokenId is derived as `uint256(uint160(to))`.
-     * @param data  MetricInput: {metricId, value, leafFull, uri}.
+     * @param data  MetricInput: {metricId, value, leafFull, uri, expiresAt}.
      *
      * @dev
      * - Requires writer role for `data.metricId`.
@@ -305,7 +306,7 @@ contract MultiTrustCredential is
 
         _safeMint(to, tokenId);
         _setTokenURI(tokenId, data.uri);
-        _metrics[tokenId][data.metricId] = Metric({ value: data.value, leafFull: data.leafFull, timestamp: uint32(block.timestamp) });
+        _metrics[tokenId][data.metricId] = Metric({ value: data.value, leafFull: data.leafFull, timestamp: uint32(block.timestamp), expiresAt: data.expiresAt });
         emit MetricUpdated(tokenId, data.metricId, data.value, data.leafFull);
     }
 
@@ -340,7 +341,8 @@ contract MultiTrustCredential is
             _metrics[tokenId][it.metricId] = Metric({
                 value: it.value,
                 leafFull: it.leafFull,
-                timestamp: uint32(block.timestamp)
+                timestamp: uint32(block.timestamp),
+                expiresAt: uint32(it.expiresAt)
             });
             emit MetricUpdated(tokenId, it.metricId, it.value, it.leafFull);
         }
@@ -372,7 +374,8 @@ contract MultiTrustCredential is
         _metrics[tokenId][upd.metricId] = Metric({
             value: upd.newValue,
             leafFull: upd.leafFull,
-            timestamp: uint32(block.timestamp)
+            timestamp: uint32(block.timestamp),
+            expiresAt: uint32(upd.expiresAt)
         });
         emit MetricUpdated(tokenId, upd.metricId, upd.newValue, upd.leafFull);
     }
@@ -402,7 +405,8 @@ contract MultiTrustCredential is
             _metrics[it.tokenId][it.metricId] = Metric({
                 value: it.newValue,
                 leafFull: it.leafFull,
-                timestamp: uint32(block.timestamp)
+                timestamp: uint32(block.timestamp),
+                expiresAt: uint32(it.expiresAt)
             });
             emit MetricUpdated(it.tokenId, it.metricId, it.newValue, it.leafFull);
         }
@@ -441,13 +445,23 @@ contract MultiTrustCredential is
 
     /*──────────────── ZK Verification ──────────*/
 
+    function updateVerifier(address _verifier) external whenNotPaused {
+        verifier = IVerifier(_verifier);
+        emit VerifierSet(_verifier);
+    }
+
+    function updateGroupVerifier(address _verifier) external whenNotPaused {
+        gVerifier = IVerifier(_verifier);
+        emit GroupVerifierSet(_verifier);
+    }
+
     /**
      * @notice Verify a zk proof for a given metric of a token.
      * @param tokenId     Credential token id (derived from holder address).
      * @param metricId    Metric type id.
      * @param a,b,c       zk proof elements (Groth16-style).
      * @param pubSignals  Public inputs expected by the circuit. This method expects:
-     *                      - pubSignals[0] = op (0 = EQ-only/KYC flag, 1=GTE, 2=LTE, 3=EQ)
+     *                      - pubSignals[0] = op (0 = EQ-only/KYC flag, 1=GTE, 2=LTE, 4=EQ)
      *                      - pubSignals[3] = holder address (uint160) for binding
      *                      - pubSignals[5] = commitment (`leafFull`) to match on-chain
      * @return ok         True if verifier accepts the proof.
@@ -480,10 +494,39 @@ contract MultiTrustCredential is
         if (op == 0) {
             require(mask == 0, "not KYC metric");
         } else {
-            require((mask & op) == op, "op not allowed");
+            require(mask != CompareMask.IN && (mask & op) == op, "op not allowed");
+        }
+
+        if (_metrics[tokenId][metricId].expiresAt != 0) {
+            require(block.timestamp <= _metrics[tokenId][metricId].expiresAt, "metric expired");
         }
 
         ok = verifier.verifyProof(a, b, c, pubSignals);
+        require(ok, "proof fail");
+    }
+
+    function proveGroupMetric(
+        uint256 tokenId,
+        bytes32 metricId,
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[6] calldata pubSignals
+    ) external view whenNotPaused returns (bool ok) {
+        // pubSignals layout (per your circuit):
+        // [0]=issuerRoot, [1]=allowRoot, [2]=nullifier, [3]=addr, [4]=statementHash, [5]=leaf
+        
+        require(pubSignals[3] == uint256(uint160(ownerOf(tokenId))), "addr mism");
+        require(pubSignals[5] == _metrics[tokenId][metricId].leafFull, "commit mism");
+
+        uint8 mask = compareMask[metricId];
+        require(mask == CompareMask.IN, "proof not allowed");
+
+        if (_metrics[tokenId][metricId].expiresAt != 0) {
+            require(block.timestamp <= _metrics[tokenId][metricId].expiresAt, "metric expired");
+        }
+
+        ok = gVerifier.verifyProof(a, b, c, pubSignals);
         require(ok, "proof fail");
     }
 

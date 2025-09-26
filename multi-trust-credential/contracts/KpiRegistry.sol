@@ -266,8 +266,8 @@ contract KpiRegistry is
      */
     function _compare(uint8 mask, uint256 v, uint256 th) internal pure returns (bool) {
         bool ok = true;
-        if (mask & CompareMask.GTE != 0) ok = ok && (v >= th);
-        if (mask & CompareMask.LTE != 0) ok = ok && (v <= th);
+        if (mask & CompareMask.GT != 0) ok = ok && (v > th);
+        if (mask & CompareMask.LT != 0) ok = ok && (v < th);
         if (mask & CompareMask.EQ  != 0) ok = ok && (v == th);
         return ok;
     }

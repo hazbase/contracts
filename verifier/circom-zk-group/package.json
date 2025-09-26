@@ -1,0 +1,17 @@
+{
+  "name": "circom-zk",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "ls",
+  "license": "Apache-2.0",
+  "description": "",
+  "devDependencies": {
+    "circomlib": "^2.0.5"
+  },
+  "dependencies": {
+    "circomlibjs": "^0.1.7"
+  }
+}

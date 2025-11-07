@@ -101,7 +101,7 @@ contract MultiTrustCredential is
      * - `value`     : current numeric value (or placeholder if commitment-only)
      * - `leafFull`  : commitment/hash (circuit-dependent)
      * - `timestamp` : last update time (seconds)
-     * - `expiresAt` : deadline of this metric.
+     * - `expiresAt` : deadline of this metric. 0 indicates no expiration date.
      */
     struct Metric { uint32 value; uint256 leafFull; uint32 timestamp; uint32 expiresAt; }
 
@@ -112,7 +112,7 @@ contract MultiTrustCredential is
     struct MetricInput  { bytes32 metricId; uint32 value; uint256 leafFull; string uri; uint32 expiresAt; }
 
     /**
-     * @dev Input for an update; `deadline` kept for future EIP-712 support (not enforced here).
+     * @dev Input for an update.
      */
     struct MetricUpdate { bytes32 metricId; uint32 newValue; uint256 leafFull; uint32 expiresAt; }
 
@@ -353,7 +353,7 @@ contract MultiTrustCredential is
     /**
      * @notice Update a metric for an existing token.
      * @param tokenId Credential token id (derived from owner address).
-     * @param upd     MetricUpdate {metricId, newValue, leafFull, deadline}.
+     * @param upd     MetricUpdate {metricId, newValue, leafFull, expiresAt}.
      *
      * @dev Requires writer role and existing token. Emits `MetricUpdated`.
      *

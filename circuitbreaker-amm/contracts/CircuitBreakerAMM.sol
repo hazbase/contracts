@@ -147,6 +147,9 @@ contract CircuitBreakerAMM is
     /// @notice Emitted when pending fees are flushed to the splitter.
     event FeeFlushed(IERC20Metadata indexed token, uint256 amount);
     /// @notice Emitted when governor updates parameters.
+    event Mint(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);
+    event Sync(uint128 reserve0, uint128 reserve1);
     event ParamsUpdated();
 
     /**
@@ -376,98 +379,109 @@ contract CircuitBreakerAMM is
         obsIdx = 0;
     }
 
-    /* ─────────────────── external actions ─────────────────── */
+    // ------------------------------------------------------------------------
+    // Views
+    // ------------------------------------------------------------------------
+    /// @notice Returns token0/token1 addresses (for router alignment).
+    function tokens() external view returns (IERC20Metadata, IERC20Metadata) { return (token0, token1); }
 
-    /**
-     * @notice Add liquidity with exact token amounts.
-     * @param amt0       Exact token0 amount to deposit.
-     * @param amt1       Exact token1 amount to deposit.
-     * @return liquidity LP tokens minted to `msg.sender`.
-     *
-     * @dev
-     * - Pulls tokens from sender; mints LP proportional to current reserves.
-     * - On first liquidity, `liquidity = sqrt(amt0 * amt1)`.
-     * - Updates reserves, kLast, and oracle; seeds oracle if uninitialized.
-     * - Emits `LiquidityChanged(lp, +amt0, +amt1)`.
-     *
-     * @custom:reverts zero liq   if either input is zero
-     * @custom:reverts tiny liq   if computed LP is zero
-     */
-    function addLiquidity(uint256 amt0, uint256 amt1)
-        external nonReentrant whenNotPaused
-        returns (uint256 liquidity)
-    {
-        require(amt0 > 0 && amt1 > 0, "zero liq");
-        token0.safeTransferFrom(msg.sender, address(this), amt0);
-        token1.safeTransferFrom(msg.sender, address(this), amt1);
-
-        if (totalSupply() == 0) {
-            liquidity = Math.sqrt(amt0 * amt1);
-        } else {
-            liquidity = Math.min(
-                amt0 * totalSupply() / pool.reserve0,
-                amt1 * totalSupply() / pool.reserve1
-            );
-        }
-        require(liquidity > 0, "tiny liq");
-        _mint(msg.sender, liquidity);     // LP token mint
-
-        pool.reserve0 += uint128(amt0);
-        pool.reserve1 += uint128(amt1);
-        pool.kLast     = uint256(pool.reserve0) * pool.reserve1;
-
-        uint32 pInit = uint32(pool.reserve0 * 1e4 / pool.reserve1);
-        if (obs[0].priceBps == 0) _seedOracle(pInit);
-        _updateOracle(pInit);
-
-        emit LiquidityChanged(msg.sender, int256(amt0), int256(amt1));
+    /// @notice Returns the current reserves.
+    function getReserves() public view returns (uint128 r0, uint128 r1) {
+        r0 = pool.reserve0;
+        r1 = pool.reserve1;
     }
 
-    /**
-     * @notice Remove liquidity and receive underlying tokens pro-rata.
-     * @param lpAmount  LP tokens to burn.
-     * @return amt0     Token0 amount sent to caller.
-     * @return amt1     Token1 amount sent to caller.
-     *
-     * @dev
-     * - Burns LP from caller; computes pro-rata share using current reserves.
-     * - Reverts if the burn would leave exactly one side zero (disallow one-sided zeroing).
-     * - Updates reserves, kLast, and oracle (if both sides remain > 0).
-     * - Emits `LiquidityChanged(lp, -amt0, -amt1)`.
-     *
-     * @custom:reverts zero burn           if `lpAmount == 0`
-     * @custom:reverts insufficient LP     if caller balance < lpAmount
-     * @custom:reverts tiny out            if both outputs would be zero
-     * @custom:reverts one-sided zero      if post-burn leaves an invalid reserve state
-     */
-    function removeLiquidity(uint256 lpAmount)
-        external nonReentrant whenNotPaused
-        returns (uint256 amt0, uint256 amt1)
-    {
-        require(lpAmount > 0, "zero burn");
-        require(lpAmount <= balanceOf(msg.sender), "insufficient LP");
+    // ------------------------------------------------------------------------
+    // Internal helpers
+    // ------------------------------------------------------------------------
+    /// @dev Updates reserves to current token balances; emits Sync.
+    function _update(uint balance0, uint balance1) internal {
+        require(balance0 <= type(uint128).max && balance1 <= type(uint128).max, "overflow");
+        pool.reserve0 = uint128(balance0);
+        pool.reserve1 = uint128(balance1);
+        // Optional: blockTimestampLast = uint32(block.timestamp);
+        emit Sync(pool.reserve0, pool.reserve1);
+    }
 
-        uint256 _total = totalSupply();
-        amt0 = lpAmount * pool.reserve0 / _total;
-        amt1 = lpAmount * pool.reserve1 / _total;
-        require(amt0 > 0 || amt1 > 0, "tiny out");
+    /// @dev Integer sqrt utility.
+    function _sqrt(uint y) internal pure returns (uint z) {
+        if (y > 3) {
+            z = y;
+            uint x = y / 2 + 1;
+            while (x < z) {
+                z = x;
+                x = (y / x + x) / 2;
+            }
+        } else if (y != 0) {
+            z = 1;
+        }
+    }
 
-        uint128 newR0 = pool.reserve0 - uint128(amt0);
-        uint128 newR1 = pool.reserve1 - uint128(amt1);
-        require(newR0 == 0 ? newR1 == 0 : newR1 > 0, "one-sided zero");
+    /// @dev Min utility.
+    function _min(uint a, uint b) internal pure returns (uint) {
+        return a < b ? a : b;
+    }
 
-        _burn(msg.sender, lpAmount);
+    /// @dev Safe token transfer helper.
+    function _safeTransfer(IERC20Metadata token, address to, uint value) internal {
+        SafeERC20.safeTransfer(token, to, value);
+    }
 
-        pool.reserve0 = newR0;
-        pool.reserve1 = newR1;
-        pool.kLast    = uint256(newR0) * newR1;
-        if (newR0 > 0 && newR1 > 0) {
-            _updateOracle(uint256(newR0) * 1e4 / newR1);
+    /* ─────────────────── external actions ─────────────────── */
+
+    /// @notice Mints LP to `to` using EXACT token amounts previously transferred to this contract.
+    /// @dev Router must transfer optimal amounts to this contract before calling.
+    /// @param to Recipient of LP tokens.
+    /// @return liquidity Amount of LP minted.
+    function mint(address to) external whenNotPaused returns (uint liquidity) {
+        (uint128 _r0, uint128 _r1) = getReserves();
+        uint balance0 = IERC20Metadata(token0).balanceOf(address(this));
+        uint balance1 = IERC20Metadata(token1).balanceOf(address(this));
+        uint amount0  = balance0 - _r0;
+        uint amount1  = balance1 - _r1;
+        require(amount0 > 0 && amount1 > 0, "insufficient-in");
+
+        uint _ts = totalSupply();
+        if (_ts == 0) {
+            liquidity = _sqrt(amount0 * amount1);
+            require(liquidity > 0, "insufficient-liquidity-minted");
+            _mint(to, liquidity);
+        } else {
+            uint liq0 = (amount0 * _ts) / _r0;
+            uint liq1 = (amount1 * _ts) / _r1;
+            liquidity = _min(liq0, liq1);
+            require(liquidity > 0, "insufficient-liquidity-minted");
+            _mint(to, liquidity);
         }
 
-        token0.safeTransfer(msg.sender, amt0);
-        token1.safeTransfer(msg.sender, amt1);
-        emit LiquidityChanged(msg.sender, -int256(amt0), -int256(amt1));
+        emit Mint(msg.sender, amount0, amount1, to);
+        _update(balance0, balance1);
+    }
+
+    /// @notice Burns LP previously transferred to this contract and sends pro-rata tokens to `to`.
+    /// @dev Router must transfer user's LP to this contract before calling.
+    /// @param to Recipient of underlying tokens.
+    /// @return amount0 Token0 amount sent.
+    /// @return amount1 Token1 amount sent.
+    function burn(address to) external whenNotPaused returns (uint amount0, uint amount1) {
+        uint liquidity = balanceOf(address(this));
+        require(liquidity > 0, "no-liquidity");
+
+        (uint128 _r0, uint128 _r1) = getReserves();
+        uint _ts = totalSupply();
+
+        amount0 = (liquidity * _r0) / _ts;
+        amount1 = (liquidity * _r1) / _ts;
+        require(amount0 > 0 && amount1 > 0, "insufficient-liquidity-burned");
+
+        _burn(address(this), liquidity);
+        _safeTransfer(token0, to, amount0);
+        _safeTransfer(token1, to, amount1);
+
+        uint balance0 = IERC20(token0).balanceOf(address(this));
+        uint balance1 = IERC20(token1).balanceOf(address(this));
+        emit Burn(msg.sender, amount0, amount1, to);
+        _update(balance0, balance1);
     }
 
     /**

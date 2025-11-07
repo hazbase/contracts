@@ -140,6 +140,17 @@ contract Splitter is
         emit FeeSplit(received, address(token), false);
     }
 
+    /// @notice Sweep entire ERC20 balance held by this contract and split by current routes.
+    /// @dev 
+    /// - Permissionless trigger: anyone can call to distribute already-held balances.
+    /// - Remainder handling is delegated to `_distributeToken` (index 0 receives residue by design).
+    function sweepERC20(IERC20 token) external nonReentrant {
+        uint256 bal = token.balanceOf(address(this));
+        if (bal == 0) return;
+        _distributeToken(token, bal);
+        emit FeeSplit(bal, address(token), false);
+    }
+
     /*────────────────────────── Native path ───────────────────*/
 
     /**

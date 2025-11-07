@@ -10,21 +10,36 @@ pragma solidity ^0.8.22;
 //
 //   https://hazbase.com
 
+import "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 
-import "./AMMFactory.sol";
-import "./CircuitBreakerAMM.sol";
-
 /**
  * @dev Minimal WNATIVE interface (ERC20 with deposit/withdraw).
  * - `deposit()` wraps ETH into WNATIVE; `withdraw(amount)` unwraps WNATIVE into ETH.
  */
-interface IWNative is IERC20 {
+interface IWNative {
     function deposit() external payable;
-    function withdraw(uint256) external;
+    function withdraw(uint) external;
+    function transfer(address to, uint value) external returns (bool);
+    function balanceOf(address who) external view returns (uint);
+}
+
+interface ICircuitBreakerAMM {
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+    function getReserves() external view returns (uint112 r0, uint112 r1);
+    function mint(address to) external returns (uint liquidity);
+    function burn(address to) external returns (uint amount0, uint amount1);
+    function swapExactToken0ForToken1(uint256 amountIn, uint256 minOut) external returns (uint256);
+    function swapExactToken1ForToken0(uint256 amountIn, uint256 minOut) external returns (uint256);
+    function quoteOut(uint256 amountIn, bool zeroForOne) external view returns (uint256 amountOut, uint32  feeBps, uint256 feeAmt);
+}
+
+interface IAMMFactory {
+    function getPool(address tokenA, address tokenB) external view returns (address);
 }
 
 /**
@@ -61,7 +76,7 @@ contract AMMRouter is ReentrancyGuard {
     using Address for address payable;
 
     /// @notice Factory used to resolve pool addresses for token pairs.
-    AMMFactory public immutable factory;
+    IAMMFactory public immutable factory;
 
     /// @notice Wrapped native token (e.g., WETH/WAVAX/WBNB).
     IWNative   public immutable WNATIVE;
@@ -75,8 +90,66 @@ contract AMMRouter is ReentrancyGuard {
      */
     constructor(address _factory, address _wnative) {
         require(_factory != address(0) && _wnative != address(0), "zero");
-        factory  = AMMFactory(_factory);
+        factory  = IAMMFactory(_factory);
         WNATIVE  = IWNative(_wnative);
+    }
+
+    // ------------------------------------------------------------------------
+    // Utilities
+    // ------------------------------------------------------------------------
+    /// @notice Sorts two token addresses (ascending).
+    function _sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+        require(tokenA != tokenB, "identical");
+        (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+        require(token0 != address(0), "zero");
+    }
+
+    /// @notice Reads reserves aligned to the (tokenA, tokenB) order.
+    function _getReserves(address pair, address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {
+        address t0 = ICircuitBreakerAMM(pair).token0();
+        (uint128 r0, uint128 r1) = ICircuitBreakerAMM(pair).getReserves();
+        if (tokenA == t0) {
+            (reserveA, reserveB) = (r0, r1);
+        } else if (tokenB == t0) {
+            (reserveA, reserveB) = (r1, r0);
+        }
+    }
+
+    /// @notice V2-style quote: amountB to keep price unchanged.
+    function quote(uint amountA, uint reserveA, uint reserveB) public pure returns (uint amountB) {
+        require(amountA > 0, "insufficient A");
+        require(reserveA > 0 && reserveB > 0, "insufficient liquidity");
+        amountB = (amountA * reserveB) / reserveA;
+    }
+
+    /// @notice Computes optimal amounts so spot price does not move.
+    function _optimalLiquidity(
+        address pair,
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin
+    ) internal view returns (uint amountA, uint amountB) {
+        (uint reserveA, uint reserveB) = _getReserves(pair, tokenA, tokenB);
+        if (reserveA == 0 && reserveB == 0) {
+            // First mint sets the price by desired amounts.
+            amountA = amountADesired;
+            amountB = amountBDesired;
+        } else {
+            uint amountBOptimal = quote(amountADesired, reserveA, reserveB);
+            if (amountBOptimal <= amountBDesired) {
+                require(amountBOptimal >= amountBMin, "insufficient B");
+                amountA = amountADesired;
+                amountB = amountBOptimal;
+            } else {
+                uint amountAOptimal = quote(amountBDesired, reserveB, reserveA);
+                require(amountAOptimal >= amountAMin, "insufficient A");
+                amountA = amountAOptimal;
+                amountB = amountBDesired;
+            }
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -148,9 +221,9 @@ contract AMMRouter is ReentrancyGuard {
 
         // call swap (pool will pull)
         if (zf1) {
-            outAmt = CircuitBreakerAMM(pool).swapExactToken0ForToken1(amountIn, 0);
+            outAmt = ICircuitBreakerAMM(pool).swapExactToken0ForToken1(amountIn, 0);
         } else {
-            outAmt = CircuitBreakerAMM(pool).swapExactToken1ForToken0(amountIn, 0);
+            outAmt = ICircuitBreakerAMM(pool).swapExactToken1ForToken0(amountIn, 0);
         }
     }
 
@@ -257,6 +330,55 @@ contract AMMRouter is ReentrancyGuard {
     /*                       Liquidity wrappers                            */
     /* ------------------------------------------------------------------ */
 
+    /// @notice Adds liquidity without moving price; transfers EXACT optimal amounts to Pair, then mints LP to `to`.
+    function addLiquidity(
+        address pair,
+        address tokenA,
+        address tokenB,
+        uint amountADesired,
+        uint amountBDesired,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB, uint liquidity) {
+        require(block.timestamp <= deadline, "expired");
+
+        (amountA, amountB) = _optimalLiquidity(
+            pair, tokenA, tokenB,
+            amountADesired, amountBDesired,
+            amountAMin, amountBMin
+        );
+
+        IERC20(tokenA).safeTransferFrom(msg.sender, pair, amountA);
+        IERC20(tokenB).safeTransferFrom(msg.sender, pair, amountB);
+        liquidity = ICircuitBreakerAMM(pair).mint(to);
+    }
+
+    function removeLiquidity(
+        address pair,
+        uint liquidity,
+        address tokenA,
+        address tokenB,
+        uint amountAMin,
+        uint amountBMin,
+        address to,
+        uint deadline
+    ) external returns (uint amountA, uint amountB) {
+        require(block.timestamp <= deadline, "expired");
+
+        IERC20(pair).safeTransferFrom(msg.sender, pair, liquidity);
+        (uint aOut, uint bOut) = ICircuitBreakerAMM(pair).burn(to);
+
+        address t0 = ICircuitBreakerAMM(pair).token0();
+        if (tokenA == t0) {
+            amountA = aOut; amountB = bOut;
+        } else if (tokenB == t0) {
+            amountA = bOut; amountB = aOut;
+        }
+        require(amountA >= amountAMin && amountB >= amountBMin, "slippage");
+    }
+
     /**
      * @notice Add liquidity to a (token, WNATIVE) pool using exact sent ETH and `amountTokenDesired`.
      * @param token              ERC20 token paired with WNATIVE.
@@ -265,6 +387,8 @@ contract AMMRouter is ReentrancyGuard {
      * @param amountETHMin       Minimum ETH amount acceptable (slippage guard).
      * @param to                 Recipient of the LP tokens.
      * @param deadline           Unix timestamp after which the tx is invalid.
+     * @return amountToken       Amount of LP tokens minted and transferred to `to`.
+     * @return amountETH         Amount of LP tokens minted and transferred to `to`.
      * @return liquidity         Amount of LP tokens minted and transferred to `to`.
      *
      * @dev
@@ -278,32 +402,37 @@ contract AMMRouter is ReentrancyGuard {
      * @custom:reverts slippage  if `amountTokenDesired < amountTokenMin` or `msg.value < amountETHMin`
      */
     function addLiquidityETH(
+        address pair,
         address token,
-        uint256 amountTokenDesired,
-        uint256 amountTokenMin,
-        uint256 amountETHMin,
+        uint amountTokenDesired,
+        uint amountTokenMin,
+        uint amountETHMin,
         address to,
-        uint256 deadline
-    ) external payable nonReentrant returns (uint256 liquidity)
-    {
+        uint deadline
+    ) external payable returns (uint amountToken, uint amountETH, uint liquidity) {
         require(block.timestamp <= deadline, "expired");
 
-        (address pool, ) = _poolSorted(token, address(WNATIVE));
+        IWNative(WNATIVE).deposit{value: msg.value}();
 
-        IERC20(token).safeTransferFrom(msg.sender, address(this), amountTokenDesired);
-        _ensureAllowance(token, pool, amountTokenDesired);
+        (address tokenA, address tokenB) = _sortTokens(token, address(WNATIVE));
+        (uint aDes, uint bDes) = tokenA == token ? (amountTokenDesired, msg.value) : (msg.value, amountTokenDesired);
+        (uint aMin, uint bMin) = tokenA == token ? (amountTokenMin, amountETHMin) : (amountETHMin, amountTokenMin);
 
-        WNATIVE.deposit{value: msg.value}();
-        _ensureAllowance(address(WNATIVE), pool, msg.value);
+        (uint aOpt, uint bOpt) = _optimalLiquidity(pair, tokenA, tokenB, aDes, bDes, aMin, bMin);
+        (amountToken, amountETH) = tokenA == token ? (aOpt, bOpt) : (bOpt, aOpt);
 
-        require(amountTokenDesired >= amountTokenMin && msg.value >= amountETHMin, "slippage");
+        // Transfer EXACT optimal amounts
+        IERC20(token).safeTransferFrom(msg.sender, pair, amountToken);
+        IWNative(WNATIVE).transfer(pair, amountETH);
+        liquidity = ICircuitBreakerAMM(pair).mint(to);
 
-        liquidity = CircuitBreakerAMM(pool).addLiquidity(
-            amountTokenDesired,
-            msg.value
-        );
-
-        IERC20(pool).safeTransfer(to, liquidity);
+        // Refund any remaining WNATIVE (if user sent too much ETH)
+        uint wBal = IWNative(WNATIVE).balanceOf(address(this));
+        if (wBal > 0) {
+            IWNative(WNATIVE).withdraw(wBal);
+            (bool ok, ) = msg.sender.call{value: wBal}("");
+            require(ok, "refund failed");
+        }
     }
 
     /**
@@ -327,7 +456,7 @@ contract AMMRouter is ReentrancyGuard {
             (address pool, bool zf1) = _poolSorted(path[i], path[i+1]);
 
             (uint out, , uint feeAmt) =
-                CircuitBreakerAMM(pool).quoteOut(amountOut, zf1);
+                ICircuitBreakerAMM(pool).quoteOut(amountOut, zf1);
 
             amountOut = out;
             totalFee += feeAmt;

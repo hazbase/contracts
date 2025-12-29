@@ -6,7 +6,6 @@ include "bitify.circom";
 
 /**************************************************
  * MerkleProof — fixed-depth Merkle inclusion check
- *  - `indices` are boolean (0: left, 1: right)
  **************************************************/
 template MerkleProof(n) {
     signal input root;
@@ -22,14 +21,13 @@ template MerkleProof(n) {
     component muxR[n];
 
     for (var i = 0; i < n; i++) {
-        // choose left/right ordering depending on indices[i]
         muxL[i] = Mux1();
-        muxL[i].c[0] <== cur[i];        // index = 0 => leaf on left
-        muxL[i].c[1] <== siblings[i];   // index = 1 => sibling on left
+        muxL[i].c[0] <== cur[i];
+        muxL[i].c[1] <== siblings[i];
         muxL[i].s    <== indices[i];
 
         muxR[i] = Mux1();
-        muxR[i].c[0] <== siblings[i];   // mirror
+        muxR[i].c[0] <== siblings[i];
         muxR[i].c[1] <== cur[i];
         muxR[i].s    <== indices[i];
 
@@ -40,98 +38,88 @@ template MerkleProof(n) {
         cur[i + 1] <== hashers[i].out;
     }
 
-    // final calculated root must match the provided root
     cur[n] === root;
 }
 
 /**************************************************
- * AllowlistCredential — dual-root membership proof
+ * AllowlistCredential — dual-root membership proof (ZKEx/ALLOWLIST)
  *
- * Proves that:
- *   (A) value is committed by issuer and bound to (addr, domain)
- *       inside issuerRoot; AND
- *   (B) the same value is a member of policy allowRoot.
+ * Public inputs layout (recommended legacy-compatible):
+ *   [0] issuerRoot
+ *   [1] allowRoot
+ *   [2] nullifier
+ *   [3] addr
+ *   [4] statementHash
+ *   [5] leaf (commitment) = Poseidon(value, salt)
  *
- * Also binds the statement to (policyId, policyVersion, allowRoot, addr, domain)
- * and exposes a policy-bound nullifier Poseidon(idNull, policyId, policyVersion).
- *
- * Notes:
- *  - "value" can be a country code (e.g., ISO-3166 numeric) or any scalar attribute.
- *  - No non-quadratic constraints introduced.
+ * Issuer tree leaf:
+ *   issuerLeaf = Poseidon(leaf, addr, domain)
+ * Allow tree leaf:
+ *   allowLeaf  = Poseidon(value)
  **************************************************/
 template AllowlistCredential(depthIssuer, depthAllow) {
     /*──────────── public inputs ────────────*/
-    signal input issuerRoot;        // issuer's Merkle root (SoT for user's attribute)
-    signal input allowRoot;         // policy allowlist Merkle root
-    signal input nullifier;         // expected nullifier (policy-bound)
-    signal input addr;              // wallet address coerced to field
-    signal input statementHash;     // expected Poseidon-based binding
-    signal input leaf;              // KYC hash (Poseidon of KYC data + salt)
+    signal input issuerRoot;
+    signal input allowRoot;
+    signal input nullifier;
+    signal input addr;
+    signal input statementHash;
+    signal input leaf;              // commitment: Poseidon(value, salt)
 
     /*──────────── private inputs ───────────*/
-    signal input policyId;          // arbitrary field element (e.g., keccak256(...) mod p)
-    signal input policyVersion;     // monotonic version (freshness)
-    signal input domain;            // domain separator (e.g., chain/app)
-    signal input value;             // attribute value (e.g., 392 for JP)
-    signal input salt;              // per-user salt for privacy
-    signal input idNull;            // user-secret for nullifier uniqueness
+    signal input policyId;
+    signal input policyVersion;
+    signal input domain;
+    signal input value;
+    signal input salt;
+    signal input idNull;
     signal input pathIssuer[depthIssuer];
-    signal input posIssuer[depthIssuer]; // 0/1
+    signal input posIssuer[depthIssuer];
     signal input pathAllow[depthAllow];
-    signal input posAllow[depthAllow];   // 0/1
+    signal input posAllow[depthAllow];
 
-    /* (optional) lightweight range check for value if you expect small domain, e.g., < 2^16 */
-    // Comment-out if not needed.
-    // component vBits = Num2Bits(16);
-    // vBits.in <== value;
+    // Enforce addr is within uint160 to match address(uint160(...)) on-chain.
+    component addrBits = Num2Bits(160);
+    addrBits.in <== addr;
 
-    /* issuer commitment: Poseidon(value, salt) */
+    // Bind leaf = Poseidon(value, salt)
     component leafUserCmt = Poseidon(2);
     leafUserCmt.inputs[0] <== value;
     leafUserCmt.inputs[1] <== salt;
+    leafUserCmt.out === leaf;
 
-    component pick = Mux1();
-    pick.c[0] <== leaf;   // KYC
-    pick.c[1] <== leafUserCmt.out;// Score
-    pick.s    <== 1;
-    signal commitLeaf <== pick.out;
-
-    commitLeaf === leaf;
-
-    /* bind commitment to address + domain to make it user/context-specific */
+    // Issuer leaf: Poseidon(leaf, addr, domain)
     component issuerLeaf = Poseidon(3);
-    issuerLeaf.inputs[0] <== leafUserCmt.out;
+    issuerLeaf.inputs[0] <== leaf;
     issuerLeaf.inputs[1] <== addr;
     issuerLeaf.inputs[2] <== domain;
 
-    /* Prove inclusion in issuerRoot */
+    // Prove inclusion in issuerRoot
     component incIssuer = MerkleProof(depthIssuer);
-    incIssuer.root   <== issuerRoot;
-    incIssuer.leaf   <== issuerLeaf.out;
+    incIssuer.root <== issuerRoot;
+    incIssuer.leaf <== issuerLeaf.out;
     for (var i = 0; i < depthIssuer; i++) {
         incIssuer.siblings[i] <== pathIssuer[i];
         incIssuer.indices[i]  <== posIssuer[i];
     }
 
-    /* allowlist membership for the SAME value */
+    // Allowlist leaf: Poseidon(value)
     component allowLeaf = Poseidon(1);
     allowLeaf.inputs[0] <== value;
 
+    // Prove inclusion in allowRoot
     component incAllow = MerkleProof(depthAllow);
-    incAllow.root   <== allowRoot;
-    incAllow.leaf   <== allowLeaf.out;
+    incAllow.root <== allowRoot;
+    incAllow.leaf <== allowLeaf.out;
     for (var j = 0; j < depthAllow; j++) {
         incAllow.siblings[j] <== pathAllow[j];
         incAllow.indices[j]  <== posAllow[j];
     }
 
-    /* bind statement:
-         statementHash == Poseidon(policyId, policyVersion, allowRoot, addr, domain)
-       Use arity-3 chaining with available Poseidon components.
-       s1 = Poseidon(policyId, policyVersion)
-       s2 = Poseidon(allowRoot, addr)
-       s3 = Poseidon(s1, s2, domain)
-    */
+    // statementHash binding:
+    // s1 = Poseidon(policyId, policyVersion)
+    // s2 = Poseidon(allowRoot, addr)
+    // s3 = Poseidon(s1, s2, domain)
     component s1 = Poseidon(2);
     s1.inputs[0] <== policyId;
     s1.inputs[1] <== policyVersion;
@@ -147,12 +135,9 @@ template AllowlistCredential(depthIssuer, depthAllow) {
 
     s3.out === statementHash;
 
-    /* compute and expose a policy-bound nullifier:
-         nullifier == Poseidon(idNull, policyId, policyVersion)
-       via chaining:
-         n1 = Poseidon(idNull, policyId)
-         n2 = Poseidon(n1, policyVersion)
-    */
+    // nullifier binding:
+    // n1 = Poseidon(idNull, policyId)
+    // n2 = Poseidon(n1, policyVersion)
     component n1 = Poseidon(2);
     n1.inputs[0] <== idNull;
     n1.inputs[1] <== policyId;
@@ -164,9 +149,6 @@ template AllowlistCredential(depthIssuer, depthAllow) {
     n2.out === nullifier;
 }
 
-/* -------- Main component (adjust depths to your trees) --------
-   - public signal order must match your verifier's expectation.
-*/
 component main {public [
     issuerRoot,
     allowRoot,

@@ -39,6 +39,57 @@ interface IVerifier {
     ) external view returns (bool);
 }
 
+// Fixed-length verifier variants for ZKEx predicates.
+interface IVerifier8 {
+    function verifyProof(
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[8] calldata publicSignals
+    ) external view returns (bool);
+}
+
+interface IVerifier9 {
+    function verifyProof(
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[9] calldata publicSignals
+    ) external view returns (bool);
+}
+
+interface IVerifier10 {
+    function verifyProof(
+        uint256[2] calldata a,
+        uint256[2][2] calldata b,
+        uint256[2] calldata c,
+        uint256[10] calldata publicSignals
+    ) external view returns (bool);
+}
+
+// NOTE: Interfaces are declared for ERC-165 interfaceId computation.
+interface IMultiTrustCredentialCore {
+    function registerMetric(bytes32,string calldata,bytes32,bool,uint8) external;
+    function setCompareMask(bytes32,uint8) external;
+    function setMaskFrozen(bytes32,bool) external;
+    function mint(address, MultiTrustCredential.MetricInput calldata) external;
+    function mintBatch(MultiTrustCredential.MintItem[] calldata) external;
+    function updateMetric(uint256, MultiTrustCredential.MetricUpdate calldata) external;
+    function updateMetricBatch(MultiTrustCredential.UpdateItem[] calldata) external;
+    function revokeMetric(uint256, bytes32) external;
+    function slash(address, bytes32, uint32) external;
+    function getMetric(uint256, bytes32) external view returns (uint32,uint256,uint32);
+    function tokenIdOf(address) external view returns (uint256);
+}
+
+interface IMultiTrustCredentialZK {
+    function proveMetric(uint256,bytes32,uint256[2] calldata,uint256[2][2] calldata,uint256[2] calldata,uint256[6] calldata) external view returns (bool);
+}
+
+interface IMultiTrustCredentialZKEx {
+    function provePredicate(uint256,bytes32,bytes32,bytes calldata,uint256[] calldata) external view returns (bool);
+}
+
 /*────────────────────────── Operator mask helpers ─────────────────────────*/
 /**
  * @dev Bit mask for allowed comparison operators in zk checks.
@@ -49,7 +100,7 @@ library CompareMask {
     uint16 internal constant GT  = 1 << 0; // 0b0001
     uint16 internal constant LT  = 1 << 1; // 0b0010
     uint16 internal constant EQ  = 1 << 2; // 0b0100
-    uint16 internal constant IN  = 1 << 3; // 0b1000 (allowlist membership)
+    //uint16 internal constant IN  = 1 << 3; // 0b1000 (allowlist membership)
     // Aliases / composites
     uint16 internal constant NONE = 0;           // KYC-only (no compare)
     uint16 internal constant NE   = GT | LT;     // not equal
@@ -77,7 +128,7 @@ library CompareMask {
 //   - Security / Audit notes:
 //       * Metrics are keyed by (tokenId, metricId); writers must hold `metricRole[metricId]`.
 //       * `proveMetric` checks both holder binding and commitment equality before verifier call.
-//       * Mask semantics: bits 0..2 correspond to GTE/LTE/EQ operators (see CompareMask).
+//       * Mask semantics: bits 0..2 correspond to GT/LT/EQ operators (see CompareMask).
 //       * UUPS upgrade gated by ADMIN_ROLE. ERC-2771 meta-tx supported.
 */
 
@@ -89,6 +140,24 @@ contract MultiTrustCredential is
     ERC2771ContextUpgradeable,
     RolesCommonUpgradeable
 {
+    /*────────────────── Interfaces ──────────────────*/
+
+    bytes4 private constant _IID_MTC_CORE =
+        IMultiTrustCredentialCore.registerMetric.selector ^
+        IMultiTrustCredentialCore.setCompareMask.selector ^
+        IMultiTrustCredentialCore.setMaskFrozen.selector ^
+        IMultiTrustCredentialCore.mint.selector ^
+        IMultiTrustCredentialCore.mintBatch.selector ^
+        IMultiTrustCredentialCore.updateMetric.selector ^
+        IMultiTrustCredentialCore.updateMetricBatch.selector ^
+        IMultiTrustCredentialCore.revokeMetric.selector ^
+        IMultiTrustCredentialCore.slash.selector ^
+        IMultiTrustCredentialCore.getMetric.selector ^
+        IMultiTrustCredentialCore.tokenIdOf.selector;
+
+    bytes4 private constant _IID_MTC_ZK = IMultiTrustCredentialZK.proveMetric.selector;
+    bytes4 private constant _IID_MTC_ZKEX = IMultiTrustCredentialZKEx.provePredicate.selector;
+    
     /*────────────────── Roles ──────────────────*/
 
     /// @notice Role authorized to slash metric values.
@@ -147,11 +216,49 @@ contract MultiTrustCredential is
     /// @notice Metric id ⇒ allowed comparison operators bitmask (see CompareMask).
     mapping(bytes32 => uint8)   public compareMask;
 
+    /// @notice metricId => predicateType => allowed flag (ZKEx).
+    mapping(bytes32 => mapping(bytes32 => bool)) public predicateAllowed;
+
+    /**
+     * @dev Predicate profile for ZKEx verification.
+     * - verifier: Groth16 verifier address for this predicate
+     * - signalsLen: expected publicSignals length
+     * - anchorIndex: index of anchor/root in publicSignals (must match stored leafFull)
+     * - addrIndex: index of holder address(uint160) in publicSignals
+     * - epochIndex: index of epoch/version in publicSignals (optional)
+     * - epochCheck: if true, require publicSignals[epochIndex] == predicateEpoch[metricId][predicateType]
+     * - requireMaskZero: if true, require compareMask[metricId] == 0 (avoid mixing policies)
+     */
+    struct PredicateProfile {
+        address verifier;
+        uint8 signalsLen;
+        uint8 anchorIndex;
+        uint8 addrIndex;
+        uint8 epochIndex;
+        bool epochCheck;
+        bool requireMaskZero;
+    }
+
+    /// @notice metricId => predicateType => predicate profile (ZKEx).
+    mapping(bytes32 => mapping(bytes32 => PredicateProfile)) public predicateProfile;
+
+    /// @notice metricId => predicateType => current epoch/version for replay/freshness checks.
+    mapping(bytes32 => mapping(bytes32 => uint256)) public predicateEpoch;
+
+    /// @dev tokenId => metricId => revoked flag
+    mapping(uint256 => mapping(bytes32 => bool)) private _revoked;
+
+    uint8 internal constant _MASK_ALLOWED = uint8(CompareMask.GT | CompareMask.LT | CompareMask.EQ);
+
     /*────────────────── ZK ─────────────────────*/
 
     /// @notice External verifier contract for zk proof checks.
     IVerifier public verifier;
-    IVerifier public gVerifier;
+
+    // Predicate identifiers for IMultiTrustCredentialZKEx.
+    bytes32 public constant PREDICATE_ALLOWLIST = keccak256("ALLOWLIST");
+    bytes32 public constant PREDICATE_RANGE = keccak256("RANGE");
+    bytes32 public constant PREDICATE_DELTA = keccak256("DELTA");
 
     /*────────────────── Events ─────────────────*/
     event MetricRegistered(bytes32 indexed id, string label, bytes32 role, uint8 mask);
@@ -160,9 +267,10 @@ contract MultiTrustCredential is
     event Slash(uint256 indexed tokenId, bytes32 indexed metricId, uint32 penalty);
     event CompareMaskChanged(bytes32 indexed id, uint8 oldMask, uint8 newMask, address indexed editor);
     event VerifierSet(address verifier);
-    event GroupVerifierSet(address verifier);
     event MaskFrozenSet(bytes32 id, bool frozen);
-
+    event PredicateAllowedChanged(bytes32 indexed metricId, bytes32 indexed predicateType, bool allowed, address indexed editor);
+    event PredicateProfileChanged(bytes32 indexed metricId, bytes32 indexed predicateType, address verifier, uint8 signalsLen, uint8 anchorIndex, uint8 addrIndex, uint8 epochIndex, bool epochCheck, bool requireMaskZero, address indexed editor);
+    event PredicateEpochChanged(bytes32 indexed metricId, bytes32 indexed predicateType, uint256 epoch, address indexed editor);
     /*────────────────── Init ───────────────────*/
 
     /**
@@ -195,12 +303,12 @@ contract MultiTrustCredential is
      * @param label      UI label (non-empty).
      * @param roleName   Writer role required to mint/update this metric.
      * @param commitment If true, treat as commitment metric (hash-only semantics).
-     * @param mask       Allowed comparison ops bitmask (0..8; GTE=1, LTE=2, EQ=4).
+     * @param mask       Allowed comparison ops bitmask (0..8; GT=1, LT=2, EQ=4).
      *
      * @dev Fails if the metric id already exists. Emits `MetricRegistered`.
      *
      * @custom:reverts MTC: metric exists if the id was already registered
-     * @custom:reverts bad mask           if mask > 8
+     * @custom:reverts bad mask           if (mask & ~_MASK_ALLOWED) == 0
      * @custom:reverts MTC: empty label   if label has zero length
      * @custom:reverts empty writer role  if roleName == 0x0
      */
@@ -217,7 +325,7 @@ contract MultiTrustCredential is
             "MTC: metric exists"
         );
         require(roleName != bytes32(0), "empty writer role");
-        require(mask <= 8, "bad mask");
+        require((mask & ~_MASK_ALLOWED) == 0, "bad mask");
         require(bytes(label).length > 0, "MTC: empty label");
 
         metricRole[id]         = roleName;
@@ -241,6 +349,12 @@ contract MultiTrustCredential is
         emit MaskFrozenSet(id, frozen);
     }
 
+    function setPredicateAllowed(bytes32 metricId, bytes32 predicateType, bool allowed) external onlyRole(ADMIN_ROLE) {
+        _assertRegistered(metricId);
+        predicateAllowed[metricId][predicateType] = allowed;
+        emit PredicateAllowedChanged(metricId, predicateType, allowed, _msgSender());
+    }
+
     /**
      * @notice Update the allowed comparison mask for a metric.
      * @param id   Metric id.
@@ -251,14 +365,14 @@ contract MultiTrustCredential is
      *
      * @custom:reverts metric unregistered if id not registered
      * @custom:reverts role              if caller lacks metric writer role
-     * @custom:reverts bad mask          if mask > 8
+     * @custom:reverts bad mask          if mask > (mask & ~_MASK_ALLOWED) == 0
      * @custom:reverts mask frozen       if admin has frozen updates for this metric
      */
     function setCompareMask(bytes32 id, uint8 mask) external whenNotPaused {
         _assertRegistered(id);
         require(!maskFrozen[id], "mask frozen");
         require(hasRole(metricRole[id], _msgSender()), "role");
-        require(mask <= 8, "bad mask");
+        require((mask & ~_MASK_ALLOWED) == 0, "bad mask");
 
         uint8 old = compareMask[id];
         if (old == mask) return;
@@ -307,6 +421,7 @@ contract MultiTrustCredential is
         _safeMint(to, tokenId);
         _setTokenURI(tokenId, data.uri);
         _metrics[tokenId][data.metricId] = Metric({ value: data.value, leafFull: data.leafFull, timestamp: uint32(block.timestamp), expiresAt: data.expiresAt });
+        _revoked[tokenId][data.metricId] = false;
         emit MetricUpdated(tokenId, data.metricId, data.value, data.leafFull);
     }
 
@@ -344,6 +459,7 @@ contract MultiTrustCredential is
                 timestamp: uint32(block.timestamp),
                 expiresAt: uint32(it.expiresAt)
             });
+            _revoked[tokenId][it.metricId] = false;
             emit MetricUpdated(tokenId, it.metricId, it.value, it.leafFull);
         }
     }
@@ -377,6 +493,7 @@ contract MultiTrustCredential is
             timestamp: uint32(block.timestamp),
             expiresAt: uint32(upd.expiresAt)
         });
+        _revoked[tokenId][upd.metricId] = false;
         emit MetricUpdated(tokenId, upd.metricId, upd.newValue, upd.leafFull);
     }
 
@@ -408,6 +525,7 @@ contract MultiTrustCredential is
                 timestamp: uint32(block.timestamp),
                 expiresAt: uint32(it.expiresAt)
             });
+            _revoked[it.tokenId][it.metricId] = false;
             emit MetricUpdated(it.tokenId, it.metricId, it.newValue, it.leafFull);
         }
     }
@@ -440,19 +558,15 @@ contract MultiTrustCredential is
         m.leafFull = 0;
         m.timestamp = uint32(block.timestamp);
 
+        _revoked[tokenId][metricId] = true;
         emit MetricRevoked(tokenId, metricId, prevValue, prevLeaf);
     }
 
     /*──────────────── ZK Verification ──────────*/
 
-    function updateVerifier(address _verifier) external whenNotPaused {
+    function updateVerifier(address _verifier) external onlyRole(ADMIN_ROLE) whenNotPaused {
         verifier = IVerifier(_verifier);
         emit VerifierSet(_verifier);
-    }
-
-    function updateGroupVerifier(address _verifier) external whenNotPaused {
-        gVerifier = IVerifier(_verifier);
-        emit GroupVerifierSet(_verifier);
     }
 
     /**
@@ -461,9 +575,13 @@ contract MultiTrustCredential is
      * @param metricId    Metric type id.
      * @param a,b,c       zk proof elements (Groth16-style).
      * @param pubSignals  Public inputs expected by the circuit. This method expects:
-     *                      - pubSignals[0] = op (0 = EQ-only/KYC flag, 1=GTE, 2=LTE, 4=EQ)
-     *                      - pubSignals[3] = holder address (uint160) for binding
-     *                      - pubSignals[5] = commitment (`leafFull`) to match on-chain
+     *                   - pubSignals[0] = mode (relation bitmask: GT=1, LT=2, EQ=4; 0 means KYC-only)
+     *                   - pubSignals[1] = root (current Merkle root / anchor; must equal stored leafFull)
+     *                   - pubSignals[2] = nullifier
+     *                   - pubSignals[3] = addr (uint160) holder address for binding
+     *                   - pubSignals[4] = threshold
+     *                   - pubSignals[5] = leaf (commitment used inside the tree leaf construction)
+     *                      
      * @return ok         True if verifier accepts the proof.
      *
      * @dev
@@ -471,10 +589,12 @@ contract MultiTrustCredential is
      * - Enforces that the chosen operator `op` is allowed by `compareMask[metricId]`.
      * - Calls external verifier; reverts if verifier returns false.
      *
-     * @custom:reverts addr mism   if pubSignals[3] != ownerOf(tokenId)
-     * @custom:reverts commit mism if pubSignals[5] != stored commitment
-     * @custom:reverts not KYC metric if op==0 but mask != 0 (reserved semantics)
-     * @custom:reverts op not allowed if op bit is not set in `compareMask`
+     * @custom:reverts anchor mism if pubSignals[1] != stored leafFull (anchor/root)
+     * @custom:reverts addr mism   if holder derived from pubSignals[3] is not the token owner
+     * @custom:reverts tokenId mism if tokenId != uint256(uint160(holder))
+     * @custom:reverts bad mode    if mode includes bits outside {GT,LT,EQ}
+     * @custom:reverts not KYC metric if mode==0 but compareMask != 0
+     * @custom:reverts op not allowed if (compareMask & mode) != mode
      * @custom:reverts proof fail  if verifier returns false
      */
     function proveMetric(
@@ -485,26 +605,120 @@ contract MultiTrustCredential is
         uint256[2] calldata c,
         uint256[6] calldata pubSignals
     ) external view whenNotPaused returns (bool ok) {
-        require(pubSignals[3] == uint256(uint160(ownerOf(tokenId))), "addr mism");
-        require(pubSignals[5] == _metrics[tokenId][metricId].leafFull, "commit mism");
+        require(address(verifier) != address(0), "need verifier");
+        _assertRegistered(metricId);
 
-        uint8 op = uint8(pubSignals[0]);
+        // Common binding checks (revoked/expiry/addr/tokenId/anchor).
+        _checkZKContext(tokenId, metricId, address(uint160(pubSignals[3])), pubSignals[1]);
+        
+        uint8 mode = uint8(pubSignals[0]);
+        require((mode & ~uint8(CompareMask.ALL)) == 0, "bad mode");
+
         uint8 mask = compareMask[metricId];
 
-        if (op == 0) {
+        if (mode == 0) {
             require(mask == 0, "not KYC metric");
         } else {
-            require(mask != CompareMask.IN && (mask & op) == op, "op not allowed");
-        }
-
-        if (_metrics[tokenId][metricId].expiresAt != 0) {
-            require(block.timestamp <= _metrics[tokenId][metricId].expiresAt, "metric expired");
+            require((mask & mode) == mode, "op not allowed");
         }
 
         ok = verifier.verifyProof(a, b, c, pubSignals);
         require(ok, "proof fail");
     }
 
+    function _isSupportedSignalsLen(uint8 n) internal pure returns (bool) {
+        return (n == 6 || n == 8 || n == 9 || n == 10);
+    }
+
+    function setPredicateProfile(
+        bytes32 metricId,
+        bytes32 predicateType,
+        address predVerifier,
+        uint8 signalsLen,
+        uint8 anchorIndex,
+        uint8 addrIndex,
+        uint8 epochIndex,
+        bool epochCheck,
+        bool requireMaskZero
+    ) external onlyRole(ADMIN_ROLE) {
+        _assertRegistered(metricId);
+        require(predVerifier != address(0), "need verifier");
+        require(_isSupportedSignalsLen(signalsLen), "unsupported signalsLen");
+        require(predVerifier.code.length > 0, "verifier not contract");
+        require(anchorIndex < signalsLen, "bad anchorIndex");
+        require(addrIndex < signalsLen, "bad addrIndex");
+        if (epochCheck) require(epochIndex < signalsLen, "bad epochIndex");
+
+        // Safety rails for common predicates
+        if (predicateType == PREDICATE_DELTA) {
+            require(epochCheck, "delta needs epochCheck");
+        }
+
+        predicateProfile[metricId][predicateType] = PredicateProfile({
+            verifier: predVerifier,
+            signalsLen: signalsLen,
+            anchorIndex: anchorIndex,
+            addrIndex: addrIndex,
+            epochIndex: epochIndex,
+            epochCheck: epochCheck,
+            requireMaskZero: requireMaskZero
+        });
+
+        emit PredicateProfileChanged(
+            metricId,
+            predicateType,
+            predVerifier,
+            signalsLen,
+            anchorIndex,
+            addrIndex,
+            epochIndex,
+            epochCheck,
+            requireMaskZero,
+            _msgSender()
+        );
+    }
+
+    function setPredicateEpoch(bytes32 metricId, bytes32 predicateType, uint256 epoch) external onlyRole(ADMIN_ROLE) {
+        _assertRegistered(metricId);
+        PredicateProfile memory p = predicateProfile[metricId][predicateType];
+        require(p.verifier != address(0), "predicate profile unset");
+        require(p.epochCheck, "epochCheck disabled");
+        predicateEpoch[metricId][predicateType] = epoch;
+        emit PredicateEpochChanged(metricId, predicateType, epoch, _msgSender());
+    }
+
+    /**
+     * @notice Verify a zk proof for a predicate (EIP-8036 ZKEx-style).
+     *
+     * Expected publicSignals layout for ALLOWLIST predicate:
+     *  - publicSignals[0] = issuerRoot (anchor; must equal stored leafFull)
+     *  - publicSignals[1] = allowRoot
+     *  - publicSignals[2] = nullifier
+     *  - publicSignals[3] = addr (uint160) holder address
+     *  - publicSignals[4] = statementHash (policy binding)
+     *  - publicSignals[5] = leaf (commitment)
+     */
+    function provePredicate(
+        uint256 tokenId,
+        bytes32 metricId,
+        bytes32 predicateType,
+        bytes calldata proof,
+        uint256[] calldata publicSignals
+    ) external view whenNotPaused returns (bool ok) {
+        // Decode Groth16 proof bytes as abi.encode(a,b,c).
+        (uint256[2] memory a, uint256[2][2] memory b, uint256[2] memory c) =
+            abi.decode(proof, (uint256[2], uint256[2][2], uint256[2]));
+
+        // Copy calldata publicSignals to memory once; internal core accepts memory.
+        uint256[] memory ps = new uint256[](publicSignals.length);
+        for (uint256 i = 0; i < publicSignals.length; i++) {
+            ps[i] = publicSignals[i];
+        }
+
+        ok = _provePredicateCore(tokenId, metricId, predicateType, a, b, c, ps);
+    }
+
+    // Backward-compatible wrapper. Prefer provePredicate() with PREDICATE_ALLOWLIST.
     function proveGroupMetric(
         uint256 tokenId,
         bytes32 metricId,
@@ -513,21 +727,97 @@ contract MultiTrustCredential is
         uint256[2] calldata c,
         uint256[6] calldata pubSignals
     ) external view whenNotPaused returns (bool ok) {
-        // pubSignals layout (per your circuit):
-        // [0]=issuerRoot, [1]=allowRoot, [2]=nullifier, [3]=addr, [4]=statementHash, [5]=leaf
-        
-        require(pubSignals[3] == uint256(uint160(ownerOf(tokenId))), "addr mism");
-        require(pubSignals[5] == _metrics[tokenId][metricId].leafFull, "commit mism");
+        _assertRegistered(metricId);
+        // Backward-compatible wrapper. Prefer provePredicate() with PREDICATE_ALLOWLIST.
+        uint256[] memory ps = new uint256[](6);
+        for (uint256 i = 0; i < 6; i++) {
+            ps[i] = pubSignals[i];
+        }
+        ok = _provePredicateCore(tokenId, metricId, PREDICATE_ALLOWLIST, a, b, c, ps);
+    }
 
-        uint8 mask = compareMask[metricId];
-        require(mask == CompareMask.IN, "proof not allowed");
+    function _checkZKContext(
+        uint256 tokenId,
+        bytes32 metricId,
+        address holder,
+        uint256 anchor
+    ) internal view {
+        // shared binding checks for baseline and predicates.
+        require(!_revoked[tokenId][metricId], "revoked");
+        require(tokenId == uint256(uint160(holder)), "tokenId mism");
+        require(ownerOf(tokenId) == holder, "addr mism");
+        require(anchor == _metrics[tokenId][metricId].leafFull, "anchor mism");
+        uint32 exp = _metrics[tokenId][metricId].expiresAt;
+        if (exp != 0) {
+            require(block.timestamp <= exp, "metric expired");
+        }
+    }
 
-        if (_metrics[tokenId][metricId].expiresAt != 0) {
-            require(block.timestamp <= _metrics[tokenId][metricId].expiresAt, "metric expired");
+    function _provePredicateCore(
+        uint256 tokenId,
+        bytes32 metricId,
+        bytes32 predicateType,
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[] memory publicSignals
+    ) internal view returns (bool ok) {
+        _assertRegistered(metricId);
+        require(predicateAllowed[metricId][predicateType], "predicate not allowed");
+        require(!_revoked[tokenId][metricId], "revoked");
+
+        PredicateProfile memory p = predicateProfile[metricId][predicateType];
+        require(p.verifier != address(0), "predicate profile unset");
+
+        require(publicSignals.length == p.signalsLen, "bad publicSignals");
+        if (p.requireMaskZero) {
+            require(compareMask[metricId] == 0, "mask not zero");
         }
 
-        ok = gVerifier.verifyProof(a, b, c, pubSignals);
+        address holder = address(uint160(publicSignals[p.addrIndex]));
+        _checkZKContext(tokenId, metricId, holder, publicSignals[p.anchorIndex]);
+
+        if (p.epochCheck) {
+            require(publicSignals[p.epochIndex] == predicateEpoch[metricId][predicateType], "bad epoch");
+        }
+
+        ok = _verifyPredicateProofMemory(p.verifier, a, b, c, publicSignals);
         require(ok, "proof fail");
+    }
+
+    function _verifyPredicateProofMemory(
+        address predVerifier,
+        uint256[2] memory a,
+        uint256[2][2] memory b,
+        uint256[2] memory c,
+        uint256[] memory publicSignals
+    ) internal view returns (bool ok) {
+        // verifier ABIs commonly use fixed-size arrays; branch by length.
+        if (publicSignals.length == 6) {
+            uint256[6] memory ps6;
+            for (uint256 i = 0; i < 6; i++) ps6[i] = publicSignals[i];
+            ok = IVerifier(predVerifier).verifyProof(a, b, c, ps6);
+            return ok;
+        }
+        if (publicSignals.length == 8) {
+            uint256[8] memory ps8;
+            for (uint256 i = 0; i < 8; i++) ps8[i] = publicSignals[i];
+            ok = IVerifier8(predVerifier).verifyProof(a, b, c, ps8);
+            return ok;
+        }
+        if (publicSignals.length == 9) {
+            uint256[9] memory ps9;
+            for (uint256 i = 0; i < 9; i++) ps9[i] = publicSignals[i];
+            ok = IVerifier9(predVerifier).verifyProof(a, b, c, ps9);
+            return ok;
+        }
+        if (publicSignals.length == 10) {
+            uint256[10] memory ps10;
+            for (uint256 i = 0; i < 10; i++) ps10[i] = publicSignals[i];
+            ok = IVerifier10(predVerifier).verifyProof(a, b, c, ps10);
+            return ok;
+        }
+        revert("unsupported signalsLen");
     }
 
     /**
@@ -558,6 +848,8 @@ contract MultiTrustCredential is
         view
         returns (uint32 value, uint256 leafFull, uint32 timestamp)
     {
+        require(!_revoked[tokenId][metricId], "revoked");
+
         Metric storage m = _metrics[tokenId][metricId];
         return (m.value, m.leafFull, m.timestamp);
     }
@@ -588,7 +880,11 @@ contract MultiTrustCredential is
         public view override(AccessControlEnumerableUpgradeable, ERC721URIStorageUpgradeable)
         returns (bool)
     {
-        return super.supportsInterface(id);
+        return
+            id == _IID_MTC_CORE ||
+            id == _IID_MTC_ZK ||
+            id == _IID_MTC_ZKEX ||
+            super.supportsInterface(id);
     }
 
     /*──────────────── Pause / Upgrade ─────────*/

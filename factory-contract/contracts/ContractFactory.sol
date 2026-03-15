@@ -62,9 +62,20 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         uint256  timestamp;
     }
 
+    struct ImplementationPolicy {
+        bool   isSet;
+        bool   cloneable;
+        bool   initRequired;
+        bytes4 initSelector;
+    }
+
     /// @dev implementationHistory[owner][contractType] → array of versions
     mapping(address => mapping(bytes32 => Implementation[]))
         private implementationHistory;
+
+    /// @notice Per-version deployment policy metadata.
+    mapping(address => mapping(bytes32 => mapping(uint32 => ImplementationPolicy)))
+        private implementationPolicies;
 
     /// @notice Deployments made by a given deployer address
     mapping(address => address[]) public deployedContracts;
@@ -75,6 +86,15 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         bytes32 indexed contractType,
         uint32  indexed version,
         address implementation
+    );
+
+    event ImplementationPolicySet(
+        address indexed owner,
+        bytes32 indexed contractType,
+        uint32 indexed version,
+        bool cloneable,
+        bool initRequired,
+        bytes4 initSelector
     );
 
     /// @notice Emitted when a clone proxy is deployed
@@ -139,14 +159,42 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
     function setImplementation(bytes32 contractType, address impl)
         external
     {
+        _setImplementation(contractType, impl, false, true, false, bytes4(0));
+    }
+
+    function setImplementationWithPolicy(
+        bytes32 contractType,
+        address impl,
+        bool cloneable,
+        bool initRequired,
+        bytes4 initSelector
+    ) external {
+        _setImplementation(contractType, impl, true, cloneable, initRequired, initSelector);
+    }
+
+    function _setImplementation(
+        bytes32 contractType,
+        address impl,
+        bool withPolicy,
+        bool cloneable,
+        bool initRequired,
+        bytes4 initSelector
+    ) internal {
         require(
             hasRole(ADMIN_ROLE, msg.sender) ||
             hasRole(DEPLOYER_ROLE, msg.sender),
             "ContractFactory: must have ADMIN or DEPLOYER role"
         );
+        require(impl != address(0), "impl=0");
+        require(impl.code.length > 0, "impl !contract");
+        if (withPolicy) {
+            require(cloneable, "clone disabled");
+            if (initRequired) {
+                require(initSelector != bytes4(0), "init selector=0");
+            }
+        }
 
-        Implementation[] storage hist =
-            implementationHistory[msg.sender][contractType];
+        Implementation[] storage hist = implementationHistory[msg.sender][contractType];
         uint32 newVersion = uint32(hist.length) + 1;
         hist.push(Implementation({
             version:   newVersion,
@@ -159,6 +207,23 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
             newVersion,
             impl
         );
+
+        if (withPolicy) {
+            implementationPolicies[msg.sender][contractType][newVersion] = ImplementationPolicy({
+                isSet: true,
+                cloneable: cloneable,
+                initRequired: initRequired,
+                initSelector: initSelector
+            });
+            emit ImplementationPolicySet(
+                msg.sender,
+                contractType,
+                newVersion,
+                cloneable,
+                initRequired,
+                initSelector
+            );
+        }
     }
 
     /**
@@ -208,6 +273,15 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         return (entry.impl, entry.timestamp);
     }
 
+
+    function getImplementationPolicy(
+        address owner,
+        bytes32 contractType,
+        uint32 version
+    ) public view returns (ImplementationPolicy memory) {
+        return implementationPolicies[owner][contractType][version];
+    }
+
     /**
      * @notice Deploy a new clone proxy using the *latest* version in an owner/type namespace.
      * @param implementationOwner  Namespace owner whose latest version will be used.
@@ -233,11 +307,14 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         nonReentrant
         returns (address proxy)
     {
-        address impl = getLatestImplementation(implementationOwner, contractType);
+        Implementation[] storage hist = implementationHistory[implementationOwner][contractType];
+        require(hist.length > 0, "No implementation");
+        uint32 version = uint32(hist.length);
+        address impl = hist[hist.length - 1].impl;
 
-        // Create minimal proxy clone
+        _enforceImplementationPolicy(implementationOwner, contractType, version, initData);
+
         proxy = impl.clone();
-        // Execute initializer
         (bool ok, ) = proxy.call(initData);
         require(ok, "Init failed");
 
@@ -276,6 +353,8 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         (address impl, ) =
             getImplementationByVersion(implementationOwner, contractType, version);
 
+        _enforceImplementationPolicy(implementationOwner, contractType, version, initData);
+
         proxy = impl.clone();
         (bool ok, ) = proxy.call(initData);
         require(ok, "Init failed");
@@ -287,5 +366,27 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
             proxy,
             msg.sender
         );
+    }
+
+    function _enforceImplementationPolicy(
+        address implementationOwner,
+        bytes32 contractType,
+        uint32 version,
+        bytes calldata initData
+    ) internal view {
+        ImplementationPolicy memory policy = implementationPolicies[implementationOwner][contractType][version];
+        if (!policy.isSet) {
+            return;
+        }
+
+        require(policy.cloneable, "clone disabled");
+        if (policy.initRequired) {
+            require(initData.length >= 4, "init required");
+            bytes4 selector;
+            assembly {
+                selector := calldataload(initData.offset)
+            }
+            require(selector == policy.initSelector, "bad init selector");
+        }
     }
 }

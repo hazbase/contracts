@@ -174,6 +174,7 @@ contract ReservePool is
      *      Emits `LiquidityFunded`.
      */
     function fundLiquidity(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) {
+        require(token != address(0), "native liquidity disabled");
         _receiveToken(token, amount);
         _tokenBalances[token].liquidity += uint128(amount);
         emit LiquidityFunded(token, amount);

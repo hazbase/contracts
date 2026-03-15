@@ -25,6 +25,12 @@ interface IReservePool {
     function fundLiquidity(address token, uint256 amount) external payable;
 }
 
+enum ReserveBucket {
+    Direct,
+    Compensation,
+    Liquidity
+}
+
 /**
  * @title Splitter
  *
@@ -36,8 +42,8 @@ interface IReservePool {
  *
  * - Features:
  *   * ERC-20 path is **fee-on-transfer safe** by measuring actual received tokens.
- *   * Native path attempts to call `fundCompensation(address,uint256)` on recipients for ReservePool
- *     compatibility; falls back to **pending** ledger if the call fails.
+ *   * ReservePool routes can explicitly target the `compensation` or `liquidity` bucket.
+ *   * Native path records failed deliveries into the **pending** ledger for later claim/sweep.
  *   * Routes are updatable by `GOVERNOR_ROLE`. Pausable, UUPS upgradeable, ERC-2771 meta-tx.
  *
  * @dev SECURITY / AUDIT NOTES
@@ -61,12 +67,14 @@ contract Splitter is
 
     /**
      * @notice A single route (recipient + share).
-     * @param dest Recipient address (EOA or ReservePool).
-     * @param bps  Share in basis points (1..10,000). Sum of all routes must be 10,000.
+     * @param dest          Recipient address (EOA or ReservePool).
+     * @param bps           Share in basis points (1..10,000). Sum of all routes must be 10,000.
+     * @param reserveBucket For ReservePool destinations: direct fallback, compensation bucket, or liquidity bucket.
      */
     struct Route {
-        address dest;
-        uint16  bps;
+        address       dest;
+        uint16        bps;
+        ReserveBucket reserveBucket;
     }
 
     /// @notice Current active routes. Ordering matters: index 0 receives **remainder**.
@@ -189,7 +197,7 @@ contract Splitter is
         uint256 amt = pendingNative[_msgSender()];
         require(amt > 0, "no pending");
         pendingNative[_msgSender()] = 0;
-        _safeNativeSendOrPend(_msgSender(), amt);
+        _safeNativeSendOrPend(Route({ dest: _msgSender(), bps: 10000, reserveBucket: ReserveBucket.Direct }), amt);
         emit PendingClaimed(_msgSender(), amt);
     }
 
@@ -205,31 +213,40 @@ contract Splitter is
     function sweepPendingNative(address dest, uint256 amount) external onlyRole(GOVERNOR_ROLE) nonReentrant {
         require(pendingNative[dest] >= amount, "exceed");
         pendingNative[dest] -= amount;
-        _safeNativeSendOrPend(dest, amount);
+        _safeNativeSendOrPend(Route({ dest: dest, bps: 10000, reserveBucket: ReserveBucket.Direct }), amount);
         emit PendingClaimed(dest, amount);
     }
 
     /*────────────────────────── Internals (ERC-20) ───────────*/
 
     /**
-     * @notice Send ERC-20 to `dest`, preferring ReservePool API and falling back to transfer.
-     * @param dest  Destination address (EOA or contract).
+     * @notice Send ERC-20 according to the route definition, preferring ReservePool API and falling back to transfer.
+     * @param route Route metadata.
      * @param token ERC-20 token to send.
      * @param amt   Amount to send.
      *
-     * @dev If `dest` is a contract, attempts `fundCompensation(token, amt)` (ReservePool).
-     *      If that call reverts, falls back to `safeTransfer(dest, amt)`.
-     *      Increases allowance to `dest` if required.
+     * @dev If `route.dest` is a contract and the route selects a ReservePool bucket, attempts the
+     *      corresponding ReservePool funding call first. If that call reverts, falls back to
+     *      `safeTransfer(route.dest, amt)`.
      */
-    function _sendReservePoolOrDirect(address dest, IERC20 token, uint256 amt) internal {
+    function _sendReservePoolOrDirect(Route memory route, IERC20 token, uint256 amt) internal {
+        address dest = route.dest;
         if (dest.code.length > 0) {
-            if (token.allowance(address(this), dest) < amt) {
-                token.safeIncreaseAllowance(dest, amt);
+            if (route.reserveBucket != ReserveBucket.Direct) {
+                if (token.allowance(address(this), dest) < amt) {
+                    token.safeIncreaseAllowance(dest, amt);
+                }
+
+                if (route.reserveBucket == ReserveBucket.Compensation) {
+                    try IReservePool(dest).fundCompensation(address(token), amt) { return; }
+                    catch {}
+                } else if (route.reserveBucket == ReserveBucket.Liquidity) {
+                    try IReservePool(dest).fundLiquidity(address(token), amt) { return; }
+                    catch {}
+                }
             }
-            try IReservePool(dest).fundCompensation(address(token), amt) {}
-            catch { token.safeTransfer(dest, amt); }
-        }
-        else {
+            token.safeTransfer(dest, amt);
+        } else {
             token.safeTransfer(dest, amt);
         }
     }
@@ -245,17 +262,17 @@ contract Splitter is
     function _distributeToken(IERC20 token, uint256 actualAmount) internal {
         uint256 len = routes.length;
         if (len == 1) {
-            _sendReservePoolOrDirect(routes[0].dest, token, actualAmount);
+            _sendReservePoolOrDirect(routes[0], token, actualAmount);
         } else {
             uint256 distributed;
             for (uint256 i = 1; i < len; ++i) {
                 uint256 share = (actualAmount * routes[i].bps) / 10000;
                 if (share == 0) continue;
-                _sendReservePoolOrDirect(routes[i].dest, token, share);
+                _sendReservePoolOrDirect(routes[i], token, share);
                 unchecked { distributed += share; }
             }
             uint256 remainder = actualAmount - distributed; // includes all dust
-            _sendReservePoolOrDirect(routes[0].dest, token, remainder);
+            _sendReservePoolOrDirect(routes[0], token, remainder);
         }
     }
 
@@ -270,36 +287,49 @@ contract Splitter is
     function _distributeNative(uint256 amount) internal {
         uint256 len = routes.length;
         if (len == 1) {
-            _safeNativeSendOrPend(routes[0].dest, amount);
+            _safeNativeSendOrPend(routes[0], amount);
         } else {
             uint256 distributed;
             for (uint256 i = 1; i < len; ++i) {
                 uint256 share = (amount * routes[i].bps) / 10000;
                 if (share == 0) continue;
-                _safeNativeSendOrPend(routes[i].dest, share);
+                _safeNativeSendOrPend(routes[i], share);
                 unchecked { distributed += share; }
             }
             uint256 remainder = amount - distributed;
-            _safeNativeSendOrPend(routes[0].dest, remainder);
+            _safeNativeSendOrPend(routes[0], remainder);
         }
     }
 
     /**
      * @notice Attempt to deliver native ETH; on failure, record as pending for later claim.
-     * @param dest  Destination address.
+     * @param route Route metadata.
      * @param value Amount of ETH to send (wei).
-     *
-     * @dev First tries calling `fundCompensation(address,uint256)` with `(address(0), value)` on the
-     *      destination (ReservePool compatible). If the call fails, credits `pendingNative[dest]`.
      */
-    function _safeNativeSendOrPend(address dest, uint256 value) private {
-        (bool ok, ) = dest.call{value: value}(
-            abi.encodeWithSignature(
-                "fundCompensation(address, uint256)",
-                address(0),
-                value
-            )
-        );
+    function _safeNativeSendOrPend(Route memory route, uint256 value) private {
+        address dest = route.dest;
+        bool ok;
+
+        if (route.reserveBucket == ReserveBucket.Compensation) {
+            (ok, ) = dest.call{value: value}(
+                abi.encodeWithSignature(
+                    "fundCompensation(address,uint256)",
+                    address(0),
+                    value
+                )
+            );
+        } else if (route.reserveBucket == ReserveBucket.Liquidity) {
+            (ok, ) = dest.call{value: value}(
+                abi.encodeWithSignature(
+                    "fundLiquidity(address,uint256)",
+                    address(0),
+                    value
+                )
+            );
+        } else {
+            (ok, ) = dest.call{value: value}("");
+        }
+
         if (!ok) {
             pendingNative[dest] += value;
             emit NativePending(dest, value);
@@ -317,6 +347,7 @@ contract Splitter is
      * @custom:reverts len          if `_routes.length == 0` or `> 10`
      * @custom:reverts zero dest    if any `dest == address(0)`
      * @custom:reverts bps          if any `bps == 0` or `> 10,000`
+     * @custom:reverts bucket       if reserveBucket is outside the known enum range
      * @custom:reverts sum!=100%    if total bps != 10,000
      */
     function _setRoutes(Route[] calldata _routes) internal {
@@ -326,6 +357,7 @@ contract Splitter is
         for (uint256 i; i < _routes.length; ++i) {
             require(_routes[i].dest != address(0), "zero dest");
             require(_routes[i].bps > 0 && _routes[i].bps <= 10000, "bps");
+            require(uint8(_routes[i].reserveBucket) <= uint8(ReserveBucket.Liquidity), "bucket");
             sum += _routes[i].bps;
             routes.push(_routes[i]);
         }

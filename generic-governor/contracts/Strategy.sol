@@ -39,38 +39,30 @@ import { IVotes } from "@openzeppelin/contracts/governance/utils/IVotes.sol";
  */
  
 interface IWeightStrategy {
-    /**
-     * @notice Compile-time identifier of the strategy (e.g., "1TOK"/"QADR" etc.).
-     * @return bytes4 Strategy id.
-     */
+    /// @notice Return the compile-time identifier of the strategy.
+    /// @return bytes4 Strategy id.
     function id() external pure returns (bytes4);
 
-    /**
-     * @notice Compute the voting weight for `voter` at `blockNumber`.
-     * @param voter        Address to evaluate.
-     * @param blockNumber  Snapshot block (as used by Governor).
-     * @param token        Governance token address (IVotes-compatible).
-     * @param params       Optional extra params (unused in these implementations).
-     * @return uint256     Weight value in the strategy's unit.
-     */
+    /// @notice Compute the voting weight for `voter` at `blockNumber`.
+    /// @param voter Address to evaluate.
+    /// @param blockNumber Snapshot block used by the Governor.
+    /// @param token Governance token address.
+    /// @param params Optional strategy params.
+    /// @return uint256 Weight value in the strategy's native unit.
     function weight(address voter, uint256 blockNumber, address token, bytes calldata params) external view returns (uint256);
 
-    /**
-     * @notice Compute quorum requirement from total supply (or transformed supply).
-     * @param totalSupply  Total voting supply (raw) or input for transformation.
-     * @param blockNo      Snapshot block (may be ignored).
-     * @return uint256     Required quorum expressed in the same unit as `weight()`.
-     */
+    /// @notice Compute the quorum requirement from total supply or a transformed supply measure.
+    /// @param totalSupply Total voting supply.
+    /// @param blockNo Snapshot block, which some strategies may ignore.
+    /// @return uint256 Required quorum expressed in the same unit as `weight()`.
     function quorum(uint256 totalSupply, uint256 blockNo) external view returns (uint256);
 
-    /**
-     * @notice Minimum proposer threshold in strategy weight units.
-     * @return uint256 Threshold value (0 means no threshold).
-     */
+    /// @notice Return the minimum proposer threshold in strategy weight units.
+    /// @return uint256 Threshold value, where `0` means no threshold.
     function minThreshold() external view returns (uint256);
 }
 
-/*──────────────────────────────────────────────────────────────*/
+// OneTokenOneVote
 /// OneTokenOneVote  – raw ERC20 balance, 1 token = 1 vote
 /**
  * @title OneTokenOneVote
@@ -89,44 +81,34 @@ contract OneTokenOneVote is IWeightStrategy {
     /// @notice Proposer threshold in raw token units (same as weight units).
     uint256 public immutable threshold;
 
-    /**
-     * @param _pct         Quorum numerator (% of total raw supply, 1..100).
-     * @param tokenThresh  Raw token amount required to create a proposal.
-     */
+    /// @param _pct Quorum numerator as a percentage of total raw supply.
+    /// @param tokenThresh Raw token amount required to create a proposal.
     constructor(uint16 _pct, uint256 tokenThresh) {
         require(_pct > 0 && _pct <= 100, "pct");
         quorumPct = _pct;
         threshold = tokenThresh; // 1 token = 1 weight ⇒ no conversion
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function id() external pure override returns(bytes4){ return _ID; }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Reads `IVotes(token).getPastVotes(voter, blockNo)` (raw).
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Reads raw historical votes from `IVotes(token).getPastVotes(voter, blockNo)`.
     function weight(address voter,uint256 blockNo,address token, bytes calldata) external view override returns(uint256){
         return IVotes(token).getPastVotes(voter,blockNo);
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Quorum is pct of total raw supply: (total * pct) / 100.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Quorum is `(total * pct) / 100`.
     function quorum(uint256 total,uint256) external view override returns(uint256){
         return (total * quorumPct) / 100;
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function minThreshold() external view override returns(uint256){ return threshold; }
 }
 
-/*──────────────────────────────────────────────────────────────*/
+// OnePersonOneVote
 /// OnePersonOneVote – any non-zero balance counts as 1 vote
 /**
  * @title OnePersonOneVote
@@ -143,44 +125,34 @@ contract OnePersonOneVote is IWeightStrategy {
     /// @notice Proposer threshold in holder-vote units (1 per eligible holder).
     uint256 public immutable threshold;
 
-    /**
-     * @param _pct          Quorum numerator (% of total raw supply, 1..100).
-     * @param holderThresh  Number of unique voters required to propose (in holder-votes).
-     */
+    /// @param _pct Quorum numerator as a percentage of total raw supply.
+    /// @param holderThresh Number of unique voters required to propose, measured in holder-votes.
     constructor(uint16 _pct, uint256 holderThresh){
         require(_pct>0 && _pct<=100, "pct");
         quorumPct = _pct;
         threshold = holderThresh; // 1 holder = 1 weight ⇒ no conversion
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function id() external pure override returns(bytes4){ return _ID; }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Returns 1 iff past votes > 0 at `blockNo`, else 0.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Returns `1` when the holder had any past votes at `blockNo`, otherwise `0`.
     function weight(address voter,uint256 blockNo, address token, bytes calldata) external view override returns(uint256){
         return IVotes(token).getPastVotes(voter,blockNo) > 0 ? 1 : 0;
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Quorum is pct of total raw supply: (total * pct) / 100.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Quorum is `(total * pct) / 100`.
     function quorum(uint256 total,uint256) external view override returns(uint256){
         return (total * quorumPct) / 100;
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function minThreshold() external view override returns(uint256){ return threshold; }
 }
 
-/*──────────────────────────────────────────────────────────────*/
+// QuadraticStake
 /// QuadraticStake – weight = sqrt(balance)
 /**
  * @title QuadraticStake
@@ -199,45 +171,35 @@ contract QuadraticStake is IWeightStrategy {
     /// @notice Proposer threshold in √token units (i.e., same unit as `weight()`).
     uint256 public immutable threshold;
 
-    /**
-     * @param _pct            Quorum numerator (% of sqrt(total), 1..100).
-     * @param tokenThreshRaw  Raw token amount required to propose (converted to √tokens).
-     */
+    /// @param _pct Quorum numerator as a percentage of `sqrt(total)`.
+    /// @param tokenThreshRaw Raw token threshold converted to `sqrt` units for proposals.
     constructor(uint16 _pct, uint256 tokenThreshRaw){
         require(_pct>0 && _pct<=100, "pct");
         quorumPct = _pct;
         threshold = tokenThreshRaw.sqrt(); // convert to weight-unit (√tokens)
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function id() external pure override returns(bytes4){ return _ID; }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Computes √(pastVotes).
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Computes `sqrt(pastVotes)`.
     function weight(address voter,uint256 blockNo,address token,bytes calldata) external view override returns(uint256){
         uint256 bal = IVotes(token).getPastVotes(voter,blockNo);
         return bal.sqrt();
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Quorum is pct of √(total): (sqrt(total) * pct) / 100.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Quorum is `(sqrt(total) * pct) / 100`.
     function quorum(uint256 total,uint256) external view override returns(uint256){
         return (total.sqrt() * quorumPct) / 100;
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function minThreshold() external view override returns(uint256){ return threshold; }
 }
 
-/*──────────────────────────────────────────────────────────────*/
+// ReputationAmplified
 /// ReputationAmplified – weight = base + k*sqrt(balance)
 /**
  * @title ReputationAmplified
@@ -262,44 +224,33 @@ contract ReputationAmplified is IWeightStrategy {
     /// @notice Proposer threshold in *weight* units (base + k*√tokens).
     uint256 public immutable threshold;
 
-    /**
-     * @param _base           Baseline reputation added to weight/quorum.
-     * @param _k              Multiplier for √(balance).
-     * @param _pct            Quorum numerator (% of √total, 1..100).
-     * @param tokenThreshRaw  Raw token amount used to derive proposer threshold:
-     *                        `threshold = base + k * √(tokenThreshRaw)`.
-     */
+    /// @param _base Baseline reputation added to weight and quorum.
+    /// @param _k Multiplier for `sqrt(balance)`.
+    /// @param _pct Quorum numerator as a percentage of `sqrt(total)`.
+    /// @param tokenThreshRaw Raw token amount used to derive the proposer threshold in weight units.
     constructor(uint64 _base,uint64 _k,uint16 _pct,uint256 tokenThreshRaw){
         require(_pct>0 && _pct<=100, "pct");
         base=_base; k=_k; quorumPct=_pct;
         threshold = uint256(base) + uint256(k) * tokenThreshRaw.sqrt();
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function id() external pure override returns(bytes4){ return _ID; }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Returns 0 if balance is zero; else `base + k * √(balance)`.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Returns `0` when the voter has no balance, otherwise `base + k * sqrt(balance)`.
     function weight(address voter,uint256 blockNo,address token,bytes calldata) external view override returns(uint256){
         uint256 bal = IVotes(token).getPastVotes(voter,blockNo);
         if(bal==0) return 0;
         return uint256(base) + uint256(k)*bal.sqrt();
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     * @dev Quorum = `base + pct * √(total) / 100`.
-     */
+    /// @inheritdoc IWeightStrategy
+    /// @dev Quorum is `base + (sqrt(total) * pct) / 100`.
     function quorum(uint256 total,uint256) external view override returns(uint256){
         return uint256(base) + (total.sqrt() * quorumPct) / 100;
     }
 
-    /**
-     * @inheritdoc IWeightStrategy
-     */
+    /// @inheritdoc IWeightStrategy
     function minThreshold() external view override returns(uint256){ return threshold; }
 }

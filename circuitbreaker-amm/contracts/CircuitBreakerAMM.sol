@@ -19,15 +19,10 @@ import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol"
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";
 
-/* -------------------------------------------------------------------------- */
-/*                           Splitter interface                               */
-/* -------------------------------------------------------------------------- */
+// Splitter interface used for protocol-fee routing.
 
-/**
- * @dev Fee router interface.
- * - `routeERC20(token, amount)` to forward ERC20 fees.
- * - `routeNative()` (payable) to forward native fees.
- */
+/// @dev Minimal fee-router interface.
+/// `routeERC20(token, amount)` forwards ERC20 fees and `routeNative()` forwards native fees.
 interface ISplitter {
     function routeERC20(IERC20Metadata token, uint256 amount) external;
     function routeNative() external payable;
@@ -74,7 +69,7 @@ contract CircuitBreakerAMM is
     using SafeERC20 for IERC20Metadata;
     using Math for uint256;
 
-    /* ─────────────────── roles & constants ─────────────────── */
+    // Roles and constants
 
     /// @notice Role for parameter updates and privileged ops.
     bytes32 public constant GOVERNOR_ROLE = keccak256("GOVERNOR_ROLE");
@@ -86,11 +81,9 @@ contract CircuitBreakerAMM is
     /// @dev Oracle ring length: 96 slots ≈ 24h @ 15 minutes per slot.
     uint32  private constant ORACLE_LEN = 96;             // 24h / 15m
 
-    /* ─────────────────────── data structs ──────────────────── */
+    // Data structs
 
-    /**
-     * @dev Packed reserves and last product for invariant tracking.
-     */
+    /// @dev Packed reserves and last product for invariant tracking.
     struct PoolState {
         uint128 reserve0;
         uint128 reserve1;
@@ -99,9 +92,7 @@ contract CircuitBreakerAMM is
     /// @notice Current pool reserves and kLast.
     PoolState public pool;
 
-    /**
-     * @dev Oracle observation: timestamp and price in bps (token0/token1 * 1e4).
-     */
+    /// @dev Oracle observation: timestamp and price in bps (token0/token1 * 1e4).
     struct Observation {
         uint32  timestamp;
         uint32  priceBps;
@@ -110,7 +101,7 @@ contract CircuitBreakerAMM is
     Observation[ORACLE_LEN] public obs;
     uint8 public obsIdx;
 
-    /* ─────────────────────── params ────────────────────────── */
+    // Parameters
 
     /// @notice Pair tokens (ordered externally by factory/router).
     IERC20Metadata public token0;
@@ -136,7 +127,7 @@ contract CircuitBreakerAMM is
     /// @notice Accrued (failed-to-route) native fees.
     uint256 public pendingNative;
 
-    /* ─────────────────────── events ────────────────────────── */
+    // Events
 
     /// @notice Emitted on each successful swap.
     event Swap(address indexed sender, bool zeroForOne, uint256 amountIn, uint256 amountOut);
@@ -152,19 +143,16 @@ contract CircuitBreakerAMM is
     event Sync(uint128 reserve0, uint128 reserve1);
     event ParamsUpdated();
 
-    /**
-     * @notice Validate AMM parameters (bps constraints and fee overflow bound).
-     * @param _baseFeeBps   Base fee (bps).
-     * @param _feeAlphaBps  Dynamic fee coefficient (bps).
-     * @param _lvl1         RV threshold 1 (bps).
-     * @param _lvl2         RV threshold 2 (bps).
-     * @param _lvl3         RV threshold 3 (bps).
-     * @param _maxTxBps     Max per-trade size as bps of TVL on input side.
-     *
-     * @custom:reverts param>10000 if any field > 10_000
-     * @custom:reverts lvl order   if not (_lvl1 < _lvl2 < _lvl3)
-     * @custom:reverts fee overflow if base + alpha*lvl3/1e4 > 10_000
-     */
+    /// @notice Validate AMM parameters (bps constraints and fee overflow bound).
+    /// @param _baseFeeBps Base fee (bps).
+    /// @param _feeAlphaBps Dynamic fee coefficient (bps).
+    /// @param _lvl1 RV threshold 1 (bps).
+    /// @param _lvl2 RV threshold 2 (bps).
+    /// @param _lvl3 RV threshold 3 (bps).
+    /// @param _maxTxBps Max per-trade size as bps of TVL on input side.
+    /// @custom:reverts param>10000 if any field > 10_000
+    /// @custom:reverts lvl order if not (_lvl1 < _lvl2 < _lvl3)
+    /// @custom:reverts fee overflow if base + alpha*lvl3/1e4 > 10_000
     function _validateParams(
         uint32 _baseFeeBps,
         uint32 _feeAlphaBps,
@@ -189,29 +177,22 @@ contract CircuitBreakerAMM is
         require(worstCase <= 10_000, "fee overflow");
     }
 
-    /* ─────────────────── initializer ───────────────────────── */
+    // Initializer
 
-    /**
-     * @notice Initialize the AMM pair and parameters; mints no liquidity.
-     * @param _token0       Token0 address.
-     * @param _token1       Token1 address.
-     * @param _splitter     Fee router contract.
-     * @param _baseFeeBps   Base fee in bps.
-     * @param _feeAlphaBps  Dynamic fee coefficient in bps.
-     * @param _lvl1Bps      Circuit breaker RV level 1 (bps).
-     * @param _lvl2Bps      Circuit breaker RV level 2 (bps).
-     * @param _lvl3Bps      Circuit breaker RV level 3 (bps).
-     * @param _maxTxBps     Max per-trade size as bps of input-side TVL when RV≥lvl1.
-     * @param admin         Address to receive admin/governor/pauser roles.
-     *
-     * @dev
-     * - Calls OZ initializers (AccessControl, UUPS, ReentrancyGuard, ERC20, Pausable).
-     * - Does not seed reserves or oracle; first addLiquidity seeds oracle via `_seedOracle`.
-     * - LP token name/symbol: "CB-LP"/"CBLP".
-     * - Emits no events.
-     *
-     * @custom:reverts if parameter validation fails per `_validateParams`.
-     */
+    /// @notice Initialize the AMM pair and parameters; mints no liquidity.
+    /// @param _token0 Token0 address.
+    /// @param _token1 Token1 address.
+    /// @param _splitter Fee router contract.
+    /// @param _baseFeeBps Base fee in bps.
+    /// @param _feeAlphaBps Dynamic fee coefficient in bps.
+    /// @param _lvl1Bps Circuit breaker RV level 1 (bps).
+    /// @param _lvl2Bps Circuit breaker RV level 2 (bps).
+    /// @param _lvl3Bps Circuit breaker RV level 3 (bps).
+    /// @param _maxTxBps Max per-trade size as bps of input-side TVL when RV>=lvl1.
+    /// @param admin Address to receive admin/governor/pauser roles.
+    /// @dev Calls the OZ upgradeable initializers and sets the pair metadata to "CB-LP"/"CBLP".
+    /// The first liquidity add seeds the oracle; initialization itself does not create reserves.
+    /// @custom:reverts if parameter validation fails per `_validateParams`.
     function initialize(
         address _token0,
         address _token1,
@@ -250,14 +231,11 @@ contract CircuitBreakerAMM is
         _grantRole(PAUSER_ROLE, admin);
     }
 
-    /* ─────────────────── oracle helpers ────────────────────── */
+    // Oracle helpers
 
-    /**
-     * @notice Record a new oracle observation if ≥900 seconds since the last slot write.
-     * @param priceBps  Price as token0/token1 * 1e4 (basis points scaling).
-     *
-     * @dev Moves ring head (`obsIdx`) forward by one and writes `(timestamp, priceBps)`.
-     */
+    /// @notice Record a new oracle observation if >=900 seconds since the last slot write.
+    /// @param priceBps Price as token0/token1 * 1e4 (basis points scaling).
+    /// @dev Moves ring head (`obsIdx`) forward by one and writes `(timestamp, priceBps)`.
     function _updateOracle(uint256 priceBps) internal {
         Observation storage o = obs[obsIdx];
         if (block.timestamp - o.timestamp >= 900) {
@@ -266,13 +244,10 @@ contract CircuitBreakerAMM is
         }
     }
 
-    /**
-     * @notice Compute realized volatility proxy in bps across the 24h window.
-     * @return rvBps  |p_new - p_old| / p_old scaled by 1e4 (bps).
-     *
-     * @dev Uses newest and oldest samples in the ring buffer.
-     *      Returns 0 if the oldest price is zero (not yet seeded).
-     */
+    /// @notice Compute realized volatility proxy in bps across the 24h window.
+    /// @return rvBps |p_new - p_old| / p_old scaled by 1e4 (bps).
+    /// @dev Uses newest and oldest samples in the ring buffer.
+    /// Returns 0 if the oldest price is zero because the ring has not been fully seeded yet.
     function currentRV() public view returns (uint32 rvBps) {
         Observation storage newest = obs[obsIdx];
         Observation storage oldest = obs[(obsIdx + 1) % ORACLE_LEN];
@@ -286,32 +261,24 @@ contract CircuitBreakerAMM is
         rvBps = uint32((diff * 1e4) / pOld);   // uint256 → uint32
     }
 
-    /* ─────────────────── fee & breaker logic ───────────────── */
+    // Fee and breaker logic
 
-    /**
-     * @notice Dynamic fee schedule: baseFee + rv * alpha / 1e4.
-     * @param rv  Realized volatility in bps.
-     * @return uint32  Fee in bps for the current trade.
-     */
+    /// @notice Dynamic fee schedule: baseFee + rv * alpha / 1e4.
+    /// @param rv Realized volatility in bps.
+    /// @return Fee in bps for the current trade.
     function _dynamicFee(uint32 rv) internal view returns (uint32) {
         return baseFeeBps + (rv * feeAlphaBps) / 1e4;
     }
 
-    /**
-     * @notice Circuit breaker checks for direction, size caps, and non-empty reserves.
-     * @param amountIn   Gross input amount for the trade.
-     * @param zeroForOne True if token0→token1; false for token1→token0.
-     *
-     * @dev
-     * - Pauses all swaps if RV ≥ lvl3.
-     * - If lvl2 ≤ RV < lvl3, only allow one direction (`zeroForOne`-dependent policy).
-     * - Require pool not empty on input side; base cap: `amountIn/tvlSide ≤ lvl1`.
-     * - If RV ≥ lvl1, also require `amountIn/tvlSide ≤ maxTxBps`.
-     *
-     * @custom:reverts "CB: paused" when breaker halts the given direction
-     * @custom:reverts "empty pool" if input side reserve is zero
-     * @custom:reverts "cap base" / "CB: cap" when size exceeds caps
-     */
+    /// @notice Circuit breaker checks for direction, size caps, and non-empty reserves.
+    /// @param amountIn Gross input amount for the trade.
+    /// @param zeroForOne True if token0->token1; false for token1->token0.
+    /// @dev Pauses all swaps if RV >= lvl3.
+    /// If lvl2 <= RV < lvl3, only one direction remains open according to the pool policy.
+    /// The function also enforces both the base cap and the elevated-RV `maxTxBps` cap.
+    /// @custom:reverts "CB: paused" when breaker halts the given direction
+    /// @custom:reverts "empty pool" if input side reserve is zero
+    /// @custom:reverts "cap base" / "CB: cap" when size exceeds caps
     function _circuitChecks(uint256 amountIn, bool zeroForOne) internal view {
         uint32 rv = currentRV();
         require(rv < lvl3Bps, "CB: paused");
@@ -329,18 +296,15 @@ contract CircuitBreakerAMM is
         }
     }
 
-    /* ─────────────────── core math (x·y=k) ─────────────────── */
+    // Core math
 
-    /**
-     * @notice Compute exact input required for a desired output (ignoring fees here).
-     * @param amountOut  Desired output amount.
-     * @param reserveIn  Current input-side reserve.
-     * @param reserveOut Current output-side reserve.
-     * @return amountIn  Required input amount (rounded up).
-     *
-     * @custom:reverts amtOut=0 if desired output is zero
-     * @custom:reverts insufficient-liquidity if `reserveOut <= amountOut`
-     */
+    /// @notice Compute exact input required for a desired output (ignoring fees here).
+    /// @param amountOut Desired output amount.
+    /// @param reserveIn Current input-side reserve.
+    /// @param reserveOut Current output-side reserve.
+    /// @return amountIn Required input amount (rounded up).
+    /// @custom:reverts amtOut=0 if desired output is zero
+    /// @custom:reverts insufficient-liquidity if `reserveOut <= amountOut`
     function _getAmountIn(
         uint256 amountOut,
         uint256 reserveIn,
@@ -354,24 +318,19 @@ contract CircuitBreakerAMM is
         amountIn = (num + den - 1) / den;
     }
 
-    /**
-     * @notice Compute output given input (ignoring fee here; caller passes net input).
-     * @param amtIn      Net input amount (after fee).
-     * @param reserveIn  Current input-side reserve.
-     * @param reserveOut Current output-side reserve.
-     * @return uint256   Output amount (floor).
-     */
+    /// @notice Compute output given input (ignoring fee here; caller passes net input).
+    /// @param amtIn Net input amount (after fee).
+    /// @param reserveIn Current input-side reserve.
+    /// @param reserveOut Current output-side reserve.
+    /// @return Output amount (floor).
     function _getAmountOut(uint256 amtIn, uint256 reserveIn, uint256 reserveOut) internal pure returns (uint256) {
         uint256 amtInAfterFee = amtIn * uint256(BPS) / BPS;
         return (amtInAfterFee * reserveOut) / (reserveIn + amtInAfterFee);
     }
 
-    /**
-     * @notice Seed the oracle ring buffer with an initial price (pInit).
-     * @param pInit  Initial price in bps.
-     *
-     * @dev Called on the first liquidity add; fills all 96 slots with the same sample.
-     */
+    /// @notice Seed the oracle ring buffer with an initial price.
+    /// @param pInit Initial price in bps.
+    /// @dev Called on the first liquidity add and fills all 96 slots with the same sample.
     function _seedOracle(uint32 pInit) internal {
         for (uint8 i = 0; i < ORACLE_LEN; ++i) {
             obs[i] = Observation(uint32(block.timestamp), pInit);
@@ -427,7 +386,7 @@ contract CircuitBreakerAMM is
         SafeERC20.safeTransfer(token, to, value);
     }
 
-    /* ─────────────────── external actions ─────────────────── */
+    // External actions
 
     /// @notice Mints LP to `to` using EXACT token amounts previously transferred to this contract.
     /// @dev Router must transfer optimal amounts to this contract before calling.
@@ -446,6 +405,7 @@ contract CircuitBreakerAMM is
             liquidity = _sqrt(amount0 * amount1);
             require(liquidity > 0, "insufficient-liquidity-minted");
             _mint(to, liquidity);
+            _seedOracle(uint32((balance0 * 1e4) / balance1));
         } else {
             uint liq0 = (amount0 * _ts) / _r0;
             uint liq1 = (amount1 * _ts) / _r1;
@@ -484,13 +444,10 @@ contract CircuitBreakerAMM is
         _update(balance0, balance1);
     }
 
-    /**
-     * @notice Internal helper to route ERC20 fee to splitter, or record as pending on failure.
-     * @param tok  Fee token.
-     * @param amt  Amount to route.
-     *
-     * @dev Grants max allowance to splitter if needed; try/catch on `routeERC20`.
-     */
+    /// @notice Route an ERC20 fee to the splitter, or record it as pending on failure.
+    /// @param tok Fee token.
+    /// @param amt Amount to route.
+    /// @dev Grants max allowance to the splitter if needed and uses try/catch around `routeERC20`.
     function _pushFee(IERC20Metadata tok, uint256 amt) internal {
         if (amt == 0) return;
 
@@ -509,14 +466,11 @@ contract CircuitBreakerAMM is
         }
     }
 
-    /**
-     * @notice Flush (part of) pending ERC20 fees to splitter.
-     * @param tok        Token to flush.
-     * @param maxAmount  Max amount to flush (0 means "all").
-     *
-     * @dev Decrements `pendingFee` and reuses `_pushFee` for actual routing.
-     * @custom:reverts no pending if nothing to flush
-     */
+    /// @notice Flush pending ERC20 fees to the splitter.
+    /// @param tok Token to flush.
+    /// @param maxAmount Max amount to flush (0 means "all").
+    /// @dev Decrements `pendingFee` first and then reuses `_pushFee` for the actual routing attempt.
+    /// @custom:reverts no pending if nothing to flush
     function flushFees(IERC20Metadata tok, uint256 maxAmount)
         external nonReentrant whenNotPaused
     {
@@ -530,12 +484,9 @@ contract CircuitBreakerAMM is
         emit FeeFlushed(tok, amt);
     }
 
-    /**
-     * @notice Internal helper to route native fee to splitter; accrues on failure.
-     * @param amount  Native amount to route.
-     *
-     * @dev Low-level call to `routeNative()` to avoid interface mismatch issues.
-     */
+    /// @notice Route a native fee to the splitter; accrues as pending on failure.
+    /// @param amount Native amount to route.
+    /// @dev Uses a low-level call to `routeNative()` to avoid interface mismatch issues.
     function _pushNative(uint256 amount) internal {
         (bool ok, ) = address(splitter).call{value: amount}(
             abi.encodeWithSignature("routeNative()")
@@ -545,12 +496,9 @@ contract CircuitBreakerAMM is
         }
     }
 
-    /**
-     * @notice Flush (part of) pending native fees to splitter.
-     * @param maxAmt  Max amount to flush (0 means "all").
-     *
-     * @dev Decrements `pendingNative` then tries to route via `_pushNative`.
-     */
+    /// @notice Flush pending native fees to the splitter.
+    /// @param maxAmt Max amount to flush (0 means "all").
+    /// @dev Decrements `pendingNative` first and then retries routing via `_pushNative`.
     function flushNative(uint256 maxAmt) external nonReentrant whenNotPaused {
         uint256 amt = pendingNative;
         if (maxAmt != 0 && maxAmt < amt) amt = maxAmt;
@@ -558,20 +506,13 @@ contract CircuitBreakerAMM is
         _pushNative(amt); // routeNative + try/catch
     }
 
-    /**
-     * @notice Swap exact token0 for token1 with a minimum out.
-     * @param amountIn  Exact input amount of token0 (gross before fee).
-     * @param minOut    Minimum acceptable amount of token1 (slippage bound).
-     * @return uint256  Actual amount of token1 sent to caller.
-     *
-     * @dev
-     * - Applies circuit checks & computes dynamic fee.
-     * - Pulls token0, deducts fee, computes output, updates reserves & oracle.
-     * - Routes fee to splitter (or records pending).
-     * - Emits `Swap(sender, true, amountIn, amountOut)`.
-     *
-     * @custom:reverts slippage if `amountOut < minOut`
-     */
+    /// @notice Swap exact token0 for token1 with a minimum out.
+    /// @param amountIn Exact input amount of token0 (gross before fee).
+    /// @param minOut Minimum acceptable amount of token1 (slippage bound).
+    /// @return Actual amount of token1 sent to caller.
+    /// @dev Applies circuit checks, charges the dynamic fee, updates reserves and oracle state,
+    /// and routes protocol fees to the splitter or the pending-fee buffer.
+    /// @custom:reverts slippage if `amountOut < minOut`
     function swapExactToken0ForToken1(uint256 amountIn, uint256 minOut) external nonReentrant whenNotPaused returns (uint256) {
         _circuitChecks(amountIn, true);
         uint32 fee = _dynamicFee(currentRV());
@@ -598,14 +539,11 @@ contract CircuitBreakerAMM is
         return amountOut;
     }
 
-    /**
-     * @notice Swap exact token1 for token0 with a minimum out.
-     * @param amountIn  Exact input amount of token1 (gross before fee).
-     * @param minOut    Minimum acceptable amount of token0 (slippage bound).
-     * @return uint256  Actual amount of token0 sent to caller.
-     *
-     * @dev See `swapExactToken0ForToken1` for flow details (mirrored).
-     */
+    /// @notice Swap exact token1 for token0 with a minimum out.
+    /// @param amountIn Exact input amount of token1 (gross before fee).
+    /// @param minOut Minimum acceptable amount of token0 (slippage bound).
+    /// @return Actual amount of token0 sent to caller.
+    /// @dev Mirrors `swapExactToken0ForToken1` with the token directions reversed.
     function swapExactToken1ForToken0(uint256 amountIn, uint256 minOut) external nonReentrant whenNotPaused returns (uint256) {
         _circuitChecks(amountIn, false);
         uint32 fee = _dynamicFee(currentRV());
@@ -630,17 +568,14 @@ contract CircuitBreakerAMM is
         return amountOut;
     }
 
-    /**
-     * @notice Quote output, feeBps, and fee amount for an exact-input swap.
-     * @param amountIn   Gross input amount.
-     * @param zeroForOne Direction: true for token0→token1, false for token1→token0.
-     * @return amountOut Net output after fee and AMM pricing.
-     * @return feeBps    Applied fee in bps.
-     * @return feeAmt    Fee amount deducted from `amountIn`.
-     *
-     * @dev View-only; uses live reserves and current RV-derived fee.
-     * @custom:reverts amtIn=0 if `amountIn == 0`
-     */
+    /// @notice Quote output, feeBps, and fee amount for an exact-input swap.
+    /// @param amountIn Gross input amount.
+    /// @param zeroForOne Direction: true for token0->token1, false for token1->token0.
+    /// @return amountOut Net output after fee and AMM pricing.
+    /// @return feeBps Applied fee in bps.
+    /// @return feeAmt Fee amount deducted from `amountIn`.
+    /// @dev View-only and based on live reserves plus the current RV-derived fee.
+    /// @custom:reverts amtIn=0 if `amountIn == 0`
     function quoteOut(
         uint256 amountIn,
         bool    zeroForOne
@@ -662,18 +597,15 @@ contract CircuitBreakerAMM is
         }
     }
 
-    /**
-     * @notice Quote required *gross* input for a desired output amount.
-     * @param amountOutDesired Desired output.
-     * @param zeroForOne       Direction: true for token0→token1, false for token1→token0.
-     * @return amountIn  Required gross input (including fee).
-     * @return feeBps    Applied fee in bps.
-     * @return feeAmt    Fee portion of `amountIn`.
-     *
-     * @dev Computes net input via `_getAmountIn`, then grosses up by 1/(1-feeBps/BPS).
-     * @custom:reverts amtOut=0 if desired output is zero
-     * @custom:reverts fee=100% if `feeBps == BPS` (division by zero)
-     */
+    /// @notice Quote required gross input for a desired output amount.
+    /// @param amountOutDesired Desired output.
+    /// @param zeroForOne Direction: true for token0->token1, false for token1->token0.
+    /// @return amountIn Required gross input (including fee).
+    /// @return feeBps Applied fee in bps.
+    /// @return feeAmt Fee portion of `amountIn`.
+    /// @dev Computes net input via `_getAmountIn`, then grosses up by 1/(1-feeBps/BPS).
+    /// @custom:reverts amtOut=0 if desired output is zero
+    /// @custom:reverts fee=100% if `feeBps == BPS` (division by zero)
     function quoteIn(
         uint256 amountOutDesired,
         bool    zeroForOne
@@ -701,29 +633,22 @@ contract CircuitBreakerAMM is
         feeAmt = amountIn - inNet;
     }
 
-    /* ─────────────────── admin ops ─────────────────────────── */
+    // Admin operations
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
-    /**
-     * @notice Update AMM parameters (governor only).
-     * @param _baseFeeBps   New base fee bps.
-     * @param _feeAlphaBps  New dynamic fee coefficient bps.
-     * @param _lvl1         New RV level 1 bps.
-     * @param _lvl2         New RV level 2 bps.
-     * @param _lvl3         New RV level 3 bps.
-     * @param _maxTxBps     New per-trade cap bps when RV≥lvl1.
-     *
-     * @dev Re-validates parameter set; emits `ParamsUpdated`.
-     */
+    /// @notice Update AMM parameters (governor only).
+    /// @param _baseFeeBps New base fee bps.
+    /// @param _feeAlphaBps New dynamic fee coefficient bps.
+    /// @param _lvl1 New RV level 1 bps.
+    /// @param _lvl2 New RV level 2 bps.
+    /// @param _lvl3 New RV level 3 bps.
+    /// @param _maxTxBps New per-trade cap bps when RV>=lvl1.
+    /// @dev Re-validates the parameter set before persisting it and emits `ParamsUpdated`.
     function updateParams(
         uint32 _baseFeeBps,
         uint32 _feeAlphaBps,
@@ -745,21 +670,17 @@ contract CircuitBreakerAMM is
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override. (Note: This contract does not use ERC-2771; falls back to ContextUpgradeable.)
-     */
+    /// @dev ERC-2771 meta-tx sender override.
+    /// This contract does not use ERC-2771 and falls back to `ContextUpgradeable`.
     function _msgSender() internal view override(ContextUpgradeable) returns(address){return super._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override. (Note: This contract does not use ERC-2771; falls back to ContextUpgradeable.)
-     */
+    /// @dev ERC-2771 meta-tx data override.
+    /// This contract does not use ERC-2771 and falls back to `ContextUpgradeable`.
     function _msgData() internal view override(ContextUpgradeable) returns(bytes calldata){return super._msgData();}
 
-    /* ─────────────────── UUPS auth ─────────────────────────── */
+    // UUPS authorization
 
-    /**
-     * @notice Authorize UUPS upgrade; only GOVERNOR_ROLE.
-     */
+    /// @notice Authorize UUPS upgrade; only GOVERNOR_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(GOVERNOR_ROLE) {}
 
     /// @dev Reserved storage to allow future variable additions while preserving layout.

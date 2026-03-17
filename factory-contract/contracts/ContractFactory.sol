@@ -50,12 +50,8 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
     bytes32 public constant ADMIN_ROLE    = keccak256("ADMIN_ROLE");
     bytes32 public constant DEPLOYER_ROLE = keccak256("DEPLOYER_ROLE");
 
-    /**
-     * @dev Versioned implementation metadata stored per (owner, contractType).
-     * - `version`   : monotonically increasing (starts at 1).
-     * - `impl`      : implementation address (EIP-1167 target).
-     * - `timestamp` : block timestamp when the version was published.
-     */
+    /// @dev Versioned implementation metadata stored per `(owner, contractType)`.
+    /// `version` increments monotonically from 1, `impl` is the EIP-1167 target, and `timestamp` records publication time.
     struct Implementation {
         uint32   version;
         address  impl;
@@ -105,14 +101,9 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         address deployer
     );
 
-    /**
-     * @notice Initialize roles.
-     * @param admin Address that receives DEFAULT_ADMIN_ROLE, ADMIN_ROLE, and DEPLOYER_ROLE.
-     *
-     * @dev
-     * - DEFAULT_ADMIN_ROLE administers itself and ADMIN_ROLE.
-     * - ADMIN_ROLE administers DEPLOYER_ROLE.
-     */
+    /// @notice Initialize roles.
+    /// @param admin Address that receives DEFAULT_ADMIN_ROLE, ADMIN_ROLE, and DEPLOYER_ROLE.
+    /// @dev DEFAULT_ADMIN_ROLE administers itself and ADMIN_ROLE, while ADMIN_ROLE administers DEPLOYER_ROLE.
     constructor(address admin) {
         // DEFAULT_ADMIN_ROLE is its own admin; ADMIN_ROLE governed by DEFAULT_ADMIN_ROLE
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -124,44 +115,37 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         _setRoleAdmin(DEPLOYER_ROLE, ADMIN_ROLE);
     }
 
-    /**
-     * @notice Grant DEPLOYER_ROLE to an address.
-     * @param who Address to grant.
-     *
-     * @dev Only callable by ADMIN_ROLE.
-     */
+    /// @notice Grant DEPLOYER_ROLE to an address.
+    /// @param who Address to grant.
+    /// @dev Only callable by ADMIN_ROLE.
     function grantDeployer(address who) external onlyRole(ADMIN_ROLE) {
         grantRole(DEPLOYER_ROLE, who);
     }
 
-    /**
-     * @notice Revoke DEPLOYER_ROLE from an address.
-     * @param who Address to revoke.
-     *
-     * @dev Only callable by ADMIN_ROLE.
-     */
+    /// @notice Revoke DEPLOYER_ROLE from an address.
+    /// @param who Address to revoke.
+    /// @dev Only callable by ADMIN_ROLE.
     function revokeDeployer(address who) external onlyRole(ADMIN_ROLE) {
         revokeRole(DEPLOYER_ROLE, who);
     }
 
-    /**
-     * @notice Publish a new implementation version in the caller’s namespace.
-     * @param contractType Bytes32 identifier for the contract family/type (e.g., keccak256("BondToken")).
-     * @param impl         Implementation address to be used as EIP-1167 target.
-     *
-     * @dev
-     * - Access: ADMIN_ROLE or DEPLOYER_ROLE.
-     * - Effects: Appends a new version (length+1) to caller’s (owner) namespace.
-     * - Emits: ImplementationVersionAdded(owner=msg.sender, contractType, version, impl).
-     *
-     * @custom:reverts ContractFactory: must have ADMIN or DEPLOYER role
-     */
+    /// @notice Publish a new implementation version in the caller's namespace.
+    /// @param contractType Bytes32 identifier for the contract family/type.
+    /// @param impl Implementation address used as the EIP-1167 target.
+    /// @dev Appends a new version to the caller's `(owner, contractType)` namespace and emits `ImplementationVersionAdded`.
+    /// @custom:reverts ContractFactory: must have ADMIN or DEPLOYER role
     function setImplementation(bytes32 contractType, address impl)
         external
     {
         _setImplementation(contractType, impl, false, true, false, bytes4(0));
     }
 
+    /// @notice Publish a new implementation version together with deployment policy metadata.
+    /// @param contractType Bytes32 identifier for the contract family/type.
+    /// @param impl Implementation address used as the EIP-1167 target.
+    /// @param cloneable Whether this version may be cloned by the generic deployment path.
+    /// @param initRequired Whether initializer calldata is mandatory.
+    /// @param initSelector Selector expected in `initData` when initialization is required.
     function setImplementationWithPolicy(
         bytes32 contractType,
         address impl,
@@ -172,6 +156,7 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         _setImplementation(contractType, impl, true, cloneable, initRequired, initSelector);
     }
 
+    /// @dev Internal helper for publishing versioned implementations with optional policy metadata.
     function _setImplementation(
         bytes32 contractType,
         address impl,
@@ -226,15 +211,11 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         }
     }
 
-    /**
-     * @notice Read the latest implementation for an owner/type namespace.
-     * @param owner         Implementation owner (namespace root).
-     * @param contractType  Type key for the desired contract family.
-     * @return address      Latest implementation address.
-     *
-     * @dev Reverts if no versions exist.
-     * @custom:reverts No implementation if the history is empty
-     */
+    /// @notice Read the latest implementation for an owner/type namespace.
+    /// @param owner Implementation owner namespace root.
+    /// @param contractType Type key for the desired contract family.
+    /// @return address Latest implementation address.
+    /// @custom:reverts No implementation if the history is empty
     function getLatestImplementation(address owner, bytes32 contractType)
         public
         view
@@ -246,17 +227,13 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         return hist[hist.length - 1].impl;
     }
 
-    /**
-     * @notice Read the implementation address and timestamp for a specific version.
-     * @param owner         Implementation owner (namespace root).
-     * @param contractType  Type key for the desired contract family.
-     * @param version       1-based version index.
-     * @return impl         Implementation address for the version.
-     * @return timestamp    Publish time for that version.
-     *
-     * @dev Reverts if `version` is out of range.
-     * @custom:reverts Invalid version if `version == 0` or `> hist.length`
-     */
+    /// @notice Read the implementation address and timestamp for a specific version.
+    /// @param owner Implementation owner namespace root.
+    /// @param contractType Type key for the desired contract family.
+    /// @param version 1-based version index.
+    /// @return impl Implementation address for the version.
+    /// @return timestamp Publish time for that version.
+    /// @custom:reverts Invalid version if `version == 0` or exceeds the history length
     function getImplementationByVersion(
         address owner,
         bytes32 contractType,
@@ -273,7 +250,10 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         return (entry.impl, entry.timestamp);
     }
 
-
+    /// @notice Read the deployment policy metadata for a specific implementation version.
+    /// @param owner Implementation owner namespace root.
+    /// @param contractType Type key for the desired contract family.
+    /// @param version 1-based version index.
     function getImplementationPolicy(
         address owner,
         bytes32 contractType,
@@ -282,22 +262,14 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         return implementationPolicies[owner][contractType][version];
     }
 
-    /**
-     * @notice Deploy a new clone proxy using the *latest* version in an owner/type namespace.
-     * @param implementationOwner  Namespace owner whose latest version will be used.
-     * @param contractType         Type key within that namespace.
-     * @param initData             ABI-encoded initializer call (e.g., abi.encodeWithSelector(Impl.initialize.selector, ...)).
-     * @return proxy               Address of the deployed minimal proxy.
-     *
-     * @dev
-     * - Effects:
-     *   * Resolves latest `impl`, clones it via EIP-1167 `clone()`, then executes `proxy.call(initData)`.
-     *   * Records the proxy under `deployedContracts[msg.sender]`.
-     * - Emits: ContractDeployed(implementationOwner, contractType, proxy, deployer=msg.sender).
-     *
-     * @custom:reverts No implementation if none published for namespace
-     * @custom:reverts Init failed       if initializer call reverts or returns (ok=false)
-     */
+    /// @notice Deploy a new clone proxy using the latest version in an owner/type namespace.
+    /// @param implementationOwner Namespace owner whose latest version will be used.
+    /// @param contractType Type key within that namespace.
+    /// @param initData ABI-encoded initializer call.
+    /// @return proxy Address of the deployed minimal proxy.
+    /// @dev Clones the latest implementation, enforces any policy metadata, executes the initializer, and records the deployment.
+    /// @custom:reverts No implementation if none has been published for the namespace
+    /// @custom:reverts Init failed if the initializer call reverts or returns `ok=false`
     function deployContract(
         address implementationOwner,
         bytes32 contractType,
@@ -327,19 +299,15 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         );
     }
 
-    /**
-     * @notice Deploy a new clone proxy using a *specific* version in an owner/type namespace.
-     * @param implementationOwner  Namespace owner.
-     * @param contractType         Type key within that namespace.
-     * @param version              1-based version index to deploy.
-     * @param initData             ABI-encoded initializer call.
-     * @return proxy               Address of the deployed minimal proxy.
-     *
-     * @dev Same flow as `deployContract` but selects a static version.
-     *
-     * @custom:reverts Invalid version  if version does not exist
-     * @custom:reverts Init failed       if initializer call reverts or returns (ok=false)
-     */
+    /// @notice Deploy a new clone proxy using a specific version in an owner/type namespace.
+    /// @param implementationOwner Namespace owner.
+    /// @param contractType Type key within that namespace.
+    /// @param version 1-based version index to deploy.
+    /// @param initData ABI-encoded initializer call.
+    /// @return proxy Address of the deployed minimal proxy.
+    /// @dev Follows the same flow as `deployContract` but uses a fixed version instead of the latest one.
+    /// @custom:reverts Invalid version if the requested version does not exist
+    /// @custom:reverts Init failed if the initializer call reverts or returns `ok=false`
     function deployContractByVersion(
         address implementationOwner,
         bytes32 contractType,
@@ -368,6 +336,7 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
         );
     }
 
+    /// @dev Enforce per-version clone/init policy metadata before deployment.
     function _enforceImplementationPolicy(
         address implementationOwner,
         bytes32 contractType,

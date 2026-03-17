@@ -28,17 +28,13 @@ import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import "./extensions/RolesCommon.sol";
 import "./external/oz/metax/ERC2771ContextUpgradeable.sol";
 
-/* ------ ERC-1400 minimal ------
- * @dev Partitioned security token (subset). Only the methods used by this contract are declared.
- */
+// ERC-1400 minimal interface used by the agreement settlement paths.
 interface IERC1400 {
-    /**
-     * @notice Transfer by partition (escrow/settlement path for ERC-1400).
-     * @param partition  Partition identifier (bytes32).
-     * @param to         Recipient address.
-     * @param value      Amount of tokens to transfer within the partition.
-     * @param data       Optional data (unused here; pass empty bytes).
-     */
+    /// @notice Transfer by partition (escrow/settlement path for ERC-1400).
+    /// @param partition  Partition identifier (bytes32).
+    /// @param to         Recipient address.
+    /// @param value      Amount of tokens to transfer within the partition.
+    /// @param data       Optional data (unused here; pass empty bytes).
     function transferByPartition(
         bytes32 partition,
         address to,
@@ -46,21 +42,17 @@ interface IERC1400 {
         bytes calldata data
     ) external;
 
-    /**
-     * @notice Read balance for a holder under a given partition.
-     * @param partition    Partition identifier.
-     * @param tokenHolder  Account to query.
-     * @return balance     Partitioned balance.
-     */
+    /// @notice Read balance for a holder under a given partition.
+    /// @param partition    Partition identifier.
+    /// @param tokenHolder  Account to query.
+    /// @return balance     Partitioned balance.
     function balanceOfByPartition(
         bytes32 partition,
         address tokenHolder
     ) external view returns (uint256);
 }
 
-/* ------ ERC-3475 / BondToken minimal ------
- * @dev Class/Nonce-based bond token (subset). Only the methods used by this contract are declared.
- */
+// ERC-3475 / BondToken minimal interface used by the agreement settlement paths.
 interface IERC3475 {
     struct Values { string key; string value; }
     struct ClassData { Values[] data; }
@@ -73,37 +65,27 @@ interface IERC3475 {
     event Redeemed(address indexed from,
                    uint256 indexed classId, uint256 indexed nonceId, uint256 amount);
 
-    /**
-     * @notice Issue (mint) bonds to `to` (not used by this contract).
-     */
+    /// @notice Issue (mint) bonds to `to` (not used by this contract).
     function issue(address to, uint256 classId,
                    uint256 nonceId, uint256 amount) external;
 
-    /**
-     * @notice Transfer bond units (msg.sender scope).
-     */
+    /// @notice Transfer bond units (msg.sender scope).
     function transfer(address to, uint256 classId,
                       uint256 nonceId, uint256 amount) external;
 
-    /**
-     * @notice Redeem (burn) bonds (not used by this contract).
-     */
+    /// @notice Redeem (burn) bonds (not used by this contract).
     function redeem(uint256 classId, uint256 nonceId, uint256 amount) external;
 
-    /**
-     * @notice Balance query for a specific class/nonce.
-     */
+    /// @notice Balance query for a specific class/nonce.
     function balanceOf(address owner, uint256 classId,
                        uint256 nonceId) external view returns (uint256);
 
-    /**
-     * @notice Operator transfer used for escrow/settlement (contract must be authorized as operator).
-     * @param from     Source address.
-     * @param to       Destination address.
-     * @param classId  Bond class identifier.
-     * @param nonceId  Bond nonce identifier.
-     * @param amount   Units to transfer.
-     */
+    /// @notice Operator transfer used for escrow/settlement (contract must be authorized as operator).
+    /// @param from     Source address.
+    /// @param to       Destination address.
+    /// @param classId  Bond class identifier.
+    /// @param nonceId  Bond nonce identifier.
+    /// @param amount   Units to transfer.
     function operatorTransferFrom(
         address from,
         address to,
@@ -113,17 +95,12 @@ interface IERC3475 {
     ) external;
 }
 
-/**
- * @dev Safe ERC165 helper.
- * - Returns false for EOAs or if supportsInterface call fails/returns malformed data.
- */
+// Safe ERC165 helper returning false for EOAs or malformed `supportsInterface` responses.
 library SafeERC165 {
-    /**
-     * @notice Safely check ERC165 `supportsInterface`.
-     * @param target  Address of the contract to probe.
-     * @param iid     Interface id.
-     * @return bool   True if `target` is a contract and claims to support `iid`.
-     */
+    /// @notice Safely check ERC165 `supportsInterface`.
+    /// @param target  Address of the contract to probe.
+    /// @param iid     Interface id.
+    /// @return bool   True if `target` is a contract and claims to support `iid`.
     function safeSupportsInterface(address target, bytes4 iid) internal view returns (bool) {
         uint256 size;
         assembly { size := extcodesize(target) }
@@ -137,35 +114,34 @@ library SafeERC165 {
     }
 }
 
-/*
- *  @title AgreementManager
+/**
+ * @title AgreementManager
  *
- *  @notice
- *  - Purpose: Two-step bilateral agreement manager with optional escrow for multiple token standards.
- *  - Escrowable assets: ERC20, ERC721, ERC1155, ERC1400 (partitioned), ERC3475 (bond/class+nonce).
- *  - Flow:
- *      1) issuer calls `offer(...)` with an EIP-712 signature from the issuer (self-signed).
- *         Optionally escrows assets into this contract (if tokenAddress != address(0)).
- *      2) investor (or delegated market) calls `acceptOffer(offerId, investorSig)` with an
- *         EIP-712 signature from the investor, transferring the escrowed asset to the investor.
- *      3) investor may `rejectOffer(...)` to return escrow to issuer; issuer may `cancelOffer(...)`.
- *  - Meta-transactions: ERC-2771 trusted forwarders are supported via ERC2771Context.
- *  - Upgradeability: UUPS upgradeable, access-controlled via ADMIN_ROLE.
- *  - Pausing: PAUSER_ROLE can pause/unpause state-changing entrypoints.
- *  - Reentrancy: State-changing external functions are guarded by ReentrancyGuard.
+ * @notice
+ * - Purpose: Two-step bilateral agreement manager with optional escrow for multiple token standards.
+ * - Escrowable assets: ERC20, ERC721, ERC1155, ERC1400 (partitioned), ERC3475 (bond/class+nonce).
+ * - Flow:
+ *     1) issuer calls `offer(...)` with an EIP-712 signature from the issuer (self-signed).
+ *        Optionally escrows assets into this contract when `tokenAddress != address(0)`.
+ *     2) investor, or a delegated market, calls `acceptOffer(offerId, investorSig)` with an
+ *        EIP-712 signature from the investor, transferring the escrowed asset to the investor.
+ *     3) investor may `rejectOffer(...)` to return escrow to issuer; issuer may `cancelOffer(...)`.
+ * - Meta-transactions: ERC-2771 trusted forwarders are supported via ERC2771Context.
+ * - Upgradeability: UUPS upgradeable, access-controlled via ADMIN_ROLE.
+ * - Pausing: PAUSER_ROLE can pause or unpause state-changing entrypoints.
+ * - Reentrancy: State-changing external functions are guarded by ReentrancyGuard.
  *
- *  @dev SECURITY / AUDIT NOTES
- *  - EIP-712 domain: name="AgreementManager", version="1". Changing these breaks signature domain.
- *  - Nonce handling: `usedNonces[issuer][nonce]` prevents replay per issuer; `currentNonce[issuer]` is informational.
- *  - Escrowless mode: When tokenAddress == address(0), no asset moves (pure agreement record). Parameters must be zeroed.
- *  - Interface detection: Uses `SafeERC165.safeSupportsInterface` to detect ERC165-based standards.
- *    Falls back to ERC20 if no known interface matches.
- *  - External calls: Token transfers occur during escrow/settlement; guarded by nonReentrant and Pausable.
- *  - Offer lifecycle: mapping `offers` stores transient state; on settle/cancel/reject, the record is deleted and a cleanup event emitted.
- *  - Disputes: Lightweight registry; no automatic enforcement, only status tracking by GUARDIAN_ROLE.
- *  - Trust assumptions: Issuer must have granted approvals for escrow; ERC3475 requires operator permission.
- *  - DoS surface: Large/invalid tokens could revert in escrow/transfer paths; caller pays gas.
- *  - Upgrades: `_authorizeUpgrade` restricted to ADMIN_ROLE; storage gap reserved.
+ * @dev SECURITY / AUDIT NOTES
+ * - EIP-712 domain: name="AgreementManager", version="1". Changing these breaks the signature domain.
+ * - Nonce handling: `usedNonces[issuer][nonce]` prevents replay per issuer; `currentNonce[issuer]` is informational.
+ * - Escrowless mode: when `tokenAddress == address(0)`, no asset moves and agreement parameters must be zeroed.
+ * - Interface detection: uses `SafeERC165.safeSupportsInterface` to detect ERC165-based standards and falls back to ERC20.
+ * - External calls: token transfers occur during escrow or settlement and are guarded by nonReentrant and Pausable.
+ * - Offer lifecycle: `offers` stores transient state; on settle, cancel, or reject, the record is deleted and cleanup is emitted.
+ * - Disputes: lightweight registry only; no automatic enforcement beyond GUARDIAN_ROLE status tracking.
+ * - Trust assumptions: issuer must have granted approvals for escrow, and ERC3475 requires operator permission.
+ * - DoS surface: large or invalid token hooks can revert in escrow or transfer paths, and the caller pays gas.
+ * - Upgrades: `_authorizeUpgrade` is restricted to ADMIN_ROLE and storage gap space is reserved.
  */
 
 contract AgreementManager is
@@ -183,12 +159,10 @@ contract AgreementManager is
     using SafeERC165 for address;
     using ECDSA for bytes32;
 
-    /*────────────────────── Types & Storage ──────────────────────*/
+    // Types & Storage
 
-    /**
-     * @dev Offer lifecycle states.
-     * None -> Offered -> (Accepted | Rejected | Cancelled)
-     */
+    /// @dev Offer lifecycle states.
+    /// None -> Offered -> (Accepted | Rejected | Cancelled)
     enum OfferStatus {
         None,
         Offered,
@@ -203,11 +177,9 @@ contract AgreementManager is
             "Offer(address issuer,address investor,address tokenAddress,bytes32 partition,uint256 tokenId,uint256 amount,uint256 classId,uint256 nonceId,bytes32 documentHash,string documentURI,uint256 expiry,uint256 nonce)"
         );
 
-    /**
-     * @dev Canonical offer struct persisted in storage until finalization.
-     * - `delegatedTo` allows a market/agent to call `acceptOffer` on behalf of `investor`.
-     * - `issuerSig` is stored; `investorSig` is provided at acceptance time (emitted in event).
-     */
+    /// @dev Canonical offer struct persisted in storage until finalization.
+    /// - `delegatedTo` allows a market/agent to call `acceptOffer` on behalf of `investor`.
+    /// - `issuerSig` is stored; `investorSig` is provided at acceptance time (emitted in event).
     struct Offer {
         address issuer;        // Offer maker (escrows asset from this address)
         address investor;      // Intended counterparty
@@ -284,20 +256,16 @@ contract AgreementManager is
     string private constant CONTRACT_TYPE = "AgreementManager";
     string private constant VERSION       = "1";
 
-    /*────────────────────── Initializer ──────────────────────────*/
+    // Initializer
 
-    /**
-     * @notice Disable initializers in constructor (UUPS pattern).
-     */
+    /// @notice Disable initializers in constructor (UUPS pattern).
     constructor() { _disableInitializers(); }
 
-    /**
-     * @notice Initialize proxy instance.
-     * @param admin       Address to be granted ADMIN/PAUSER/GUARDIAN roles via RolesCommon.
-     * @param forwarders  Trusted forwarder list for ERC-2771 meta-transactions.
-     *
-     * @dev Calls initializers of inherited upgradeable modules.
-     */
+    /// @notice Initialize proxy instance.
+    /// @param admin       Address to be granted ADMIN/PAUSER/GUARDIAN roles via RolesCommon.
+    /// @param forwarders  Trusted forwarder list for ERC-2771 meta-transactions.
+    ///
+    /// @dev Calls initializers of inherited upgradeable modules.
     function initialize(address admin, address[] calldata forwarders) external initializer {
         __ERC2771Context_init(forwarders);
         __EIP712_init(CONTRACT_TYPE, VERSION);
@@ -307,70 +275,62 @@ contract AgreementManager is
         __UUPSUpgradeable_init();
     }
 
-    /*────────────────────── Public views ─────────────────────────*/
+    // Public views
 
-    /**
-     * @notice EIP-712 domain name.
-     * @return string  Constant "AgreementManager".
-     */
+    /// @notice EIP-712 domain name.
+    /// @return string  Constant "AgreementManager".
     function contractType() external pure returns (string memory) {
         return CONTRACT_TYPE;
     }
 
-    /**
-     * @notice EIP-712 domain version.
-     * @return string  Constant "1".
-     */
+    /// @notice EIP-712 domain version.
+    /// @return string  Constant "1".
     function contractVersion() external pure returns (string memory) {
         return VERSION;
     }
 
-    /**
-     * @notice Read the next nonce for an issuer (informational).
-     * @param issuer  Address of the issuer.
-     * @return uint256 Next nonce value expected to be unused.
-     */
+    /// @notice Read the next nonce for an issuer (informational).
+    /// @param issuer  Address of the issuer.
+    /// @return uint256 Next nonce value expected to be unused.
     function nextNonce(address issuer) external view returns (uint256) {
         return currentNonce[issuer];
     }
 
-    /*────────────────────── Core: offer flow ─────────────────────*/
+    // Core: offer flow
 
-    /**
-     * @notice Create an offer and optionally escrow assets into the contract.
-     *
-     * @param investor      The intended counterparty who may accept/reject the offer.
-     * @param tokenAddress  Asset contract address; `address(0)` means escrowless (no asset moved).
-     * @param partition     ERC-1400 partition (ignored for other standards).
-     * @param tokenId       ERC721/1155 token id (0 for fungibles).
-     * @param amount        Quantity for ERC20/1400/1155/3475 (1 for single ERC721).
-     * @param classId       ERC-3475 class id (0 for others).
-     * @param nonceId       ERC-3475 nonce id (0 for others).
-     * @param documentHash  Hash of off-chain document describing the agreement.
-     * @param documentURI   URI pointing to the off-chain document (IPFS/HTTPS).
-     * @param expiry        UNIX timestamp when the offer expires (must be >= block.timestamp).
-     * @param nonce         Issuer-scoped nonce for replay protection (must be unused).
-     * @param issuerSig     EIP-712 signature by the issuer over OFFER_TYPEHASH with the above fields.
-     * @param market        Optional delegated executor; if nonzero, only this address can call `acceptOffer`.
-     *
-     * @dev
-     * - Effects:
-     *   * Validates expiry and per-issuer nonce.
-     *   * Verifies issuer EIP-712 signature.
-     *   * Escrows assets from `msg.sender` (issuer) unless `tokenAddress == address(0)`.
-     *   * Stores Offer struct in `offers` keyed by deterministic `offerId`.
-     *   * Marks `usedNonces[issuer][nonce] = true` and increments `currentNonce[issuer]`.
-     * - Interactions:
-     *   * External token calls for escrow (`_escrow`).
-     * - Emits: `OfferCreated(offerId, issuer, investor)`.
-     *
-     * @custom:reverts
-     * - "Offer expired" if `block.timestamp > expiry`
-     * - "Nonce used" if `usedNonces[issuer][nonce] == true`
-     * - "escrowless params" if escrowless but any of {tokenId, amount, classId, nonceId} != 0
-     * - "Bad issuer sig" if EIP-712 signature verification fails
-     * - "Offer exists" if computed `offerId` already used
-     */
+    /// @notice Create an offer and optionally escrow assets into the contract.
+    ///
+    /// @param investor      The intended counterparty who may accept/reject the offer.
+    /// @param tokenAddress  Asset contract address; `address(0)` means escrowless (no asset moved).
+    /// @param partition     ERC-1400 partition (ignored for other standards).
+    /// @param tokenId       ERC721/1155 token id (0 for fungibles).
+    /// @param amount        Quantity for ERC20/1400/1155/3475 (1 for single ERC721).
+    /// @param classId       ERC-3475 class id (0 for others).
+    /// @param nonceId       ERC-3475 nonce id (0 for others).
+    /// @param documentHash  Hash of off-chain document describing the agreement.
+    /// @param documentURI   URI pointing to the off-chain document (IPFS/HTTPS).
+    /// @param expiry        UNIX timestamp when the offer expires (must be >= block.timestamp).
+    /// @param nonce         Issuer-scoped nonce for replay protection (must be unused).
+    /// @param issuerSig     EIP-712 signature by the issuer over OFFER_TYPEHASH with the above fields.
+    /// @param market        Optional delegated executor; if nonzero, only this address can call `acceptOffer`.
+    ///
+    /// @dev
+    /// - Effects:
+    ///   * Validates expiry and per-issuer nonce.
+    ///   * Verifies issuer EIP-712 signature.
+    ///   * Escrows assets from `msg.sender` (issuer) unless `tokenAddress == address(0)`.
+    ///   * Stores Offer struct in `offers` keyed by deterministic `offerId`.
+    ///   * Marks `usedNonces[issuer][nonce] = true` and increments `currentNonce[issuer]`.
+    /// - Interactions:
+    ///   * External token calls for escrow (`_escrow`).
+    /// - Emits: `OfferCreated(offerId, issuer, investor)`.
+    ///
+    /// @custom:reverts
+    /// - "Offer expired" if `block.timestamp > expiry`
+    /// - "Nonce used" if `usedNonces[issuer][nonce] == true`
+    /// - "escrowless params" if escrowless but any of {tokenId, amount, classId, nonceId} != 0
+    /// - "Bad issuer sig" if EIP-712 signature verification fails
+    /// - "Offer exists" if computed `offerId` already used
     function offer(
         address investor,
         address tokenAddress,
@@ -393,7 +353,7 @@ contract AgreementManager is
             require(amount == 0 && tokenId == 0, "escrowless params");
         }
 
-        /* ── verify EIP-712 signature ── */
+        // verify EIP-712 signature
         bytes32 structHash = keccak256(
             abi.encode(
                 OFFER_TYPEHASH,
@@ -440,10 +400,10 @@ contract AgreementManager is
         Offer storage o = offers[offerId];
         require(o.status == OfferStatus.None, "Offer exists");
 
-        /* ── escrow ── */
+        // escrow
         _escrow(tokenAddress, partition, tokenId, amount, classId, nonceId);
 
-        /* ── fill struct ── */
+        // fill struct
         o.issuer   = issuer;
         o.investor = investor;
         o.tokenAddress = tokenAddress;
@@ -463,25 +423,23 @@ contract AgreementManager is
         emit OfferCreated(offerId, issuer, investor);
     }
 
-    /**
-     * @notice Cancel an offered (non-expired) offer; only issuer can cancel.
-     *         Escrowed assets are returned to issuer and the offer record is deleted.
-     *
-     * @param offerId  The id returned/emitted at `offer(...)`.
-     *
-     * @dev
-     * - Requirements:
-     *   * `offers[offerId].status == Offered`
-     *   * `msg.sender == offers[offerId].issuer`
-     * - Effects:
-     *   * Status set to Cancelled, escrow returned to issuer.
-     *   * Offer storage entry deleted and cleanup event emitted.
-     * - Emits: `OfferCancelled(offerId)`, `OfferCleanedUp(offerId)`.
-     *
-     * @custom:reverts
-     * - "Not offered" if `status != Offered`
-     * - "Not issuer" if caller is not the issuer
-     */
+    /// @notice Cancel an offered (non-expired) offer; only issuer can cancel.
+    ///         Escrowed assets are returned to issuer and the offer record is deleted.
+    ///
+    /// @param offerId  The id returned/emitted at `offer(...)`.
+    ///
+    /// @dev
+    /// - Requirements:
+    ///   * `offers[offerId].status == Offered`
+    ///   * `msg.sender == offers[offerId].issuer`
+    /// - Effects:
+    ///   * Status set to Cancelled, escrow returned to issuer.
+    ///   * Offer storage entry deleted and cleanup event emitted.
+    /// - Emits: `OfferCancelled(offerId)`, `OfferCleanedUp(offerId)`.
+    ///
+    /// @custom:reverts
+    /// - "Not offered" if `status != Offered`
+    /// - "Not issuer" if caller is not the issuer
     function cancelOffer(bytes32 offerId) external whenNotPaused nonReentrant {
         Offer storage o = offers[offerId];
         require(o.status == OfferStatus.Offered, "Not offered");
@@ -495,33 +453,31 @@ contract AgreementManager is
         emit OfferCleanedUp(offerId);
     }
 
-    /**
-     * @notice Accept an existing offer either by the investor or by a delegated market.
-     *         Transfers escrowed assets to the investor and finalizes the offer.
-     *
-     * @param offerId      Deterministic id of the offer computed in `offer(...)`.
-     * @param investorSig  EIP-712 signature by the investor over the same struct as issuer signed.
-     *
-     * @dev
-     * - Caller:
-     *   * If `offers[offerId].delegatedTo != 0`, caller must equal `delegatedTo` and investor must be `offers[offerId].investor`.
-     *   * Otherwise caller must be exactly `offers[offerId].investor`.
-     * - Requirements:
-     *   * `status == Offered`
-     *   * `block.timestamp <= expiry`
-     *   * `investorSig` must recover to `offers[offerId].investor`.
-     * - Effects:
-     *   * Status set to Accepted, escrow transferred to investor, `isSettled[offerId] = true`.
-     *   * Offer storage entry deleted and cleanup event emitted.
-     * - Emits: `OfferSettled(...)`, `OfferCleanedUp(offerId)`.
-     *
-     * @custom:reverts
-     * - "not offered" if not in Offered state
-     * - "expired" if now > expiry
-     * - "delegated:auth" if improper delegated caller
-     * - "wrong investor" if caller is not the designated investor (no delegation)
-     * - "bad sig" if `investorSig` fails EIP-712 verification
-     */
+    /// @notice Accept an existing offer either by the investor or by a delegated market.
+    ///         Transfers escrowed assets to the investor and finalizes the offer.
+    ///
+    /// @param offerId      Deterministic id of the offer computed in `offer(...)`.
+    /// @param investorSig  EIP-712 signature by the investor over the same struct as issuer signed.
+    ///
+    /// @dev
+    /// - Caller:
+    ///   * If `offers[offerId].delegatedTo != 0`, caller must equal `delegatedTo` and investor must be `offers[offerId].investor`.
+    ///   * Otherwise caller must be exactly `offers[offerId].investor`.
+    /// - Requirements:
+    ///   * `status == Offered`
+    ///   * `block.timestamp <= expiry`
+    ///   * `investorSig` must recover to `offers[offerId].investor`.
+    /// - Effects:
+    ///   * Status set to Accepted, escrow transferred to investor, `isSettled[offerId] = true`.
+    ///   * Offer storage entry deleted and cleanup event emitted.
+    /// - Emits: `OfferSettled(...)`, `OfferCleanedUp(offerId)`.
+    ///
+    /// @custom:reverts
+    /// - "not offered" if not in Offered state
+    /// - "expired" if now > expiry
+    /// - "delegated:auth" if improper delegated caller
+    /// - "wrong investor" if caller is not the designated investor (no delegation)
+    /// - "bad sig" if `investorSig` fails EIP-712 verification
     function acceptOffer(bytes32 offerId, bytes calldata investorSig)
         external
         whenNotPaused
@@ -581,25 +537,23 @@ contract AgreementManager is
         emit OfferCleanedUp(offerId);
     }
 
-    /**
-     * @notice Reject an offered (non-expired) offer; only the designated investor can reject.
-     *         Escrow is returned to the issuer and the offer is deleted.
-     *
-     * @param offerId  The id of the offer to reject.
-     *
-     * @dev
-     * - Requirements:
-     *   * `status == Offered`
-     *   * `msg.sender == investor`
-     * - Effects:
-     *   * Status set to Rejected, escrow returned to issuer.
-     *   * Offer storage entry deleted and cleanup event emitted.
-     * - Emits: `OfferRejected(offerId)`, `OfferCleanedUp(offerId)`.
-     *
-     * @custom:reverts
-     * - "Not offered" if `status != Offered`
-     * - "Wrong investor" if caller is not the designated investor
-     */
+    /// @notice Reject an offered (non-expired) offer; only the designated investor can reject.
+    ///         Escrow is returned to the issuer and the offer is deleted.
+    ///
+    /// @param offerId  The id of the offer to reject.
+    ///
+    /// @dev
+    /// - Requirements:
+    ///   * `status == Offered`
+    ///   * `msg.sender == investor`
+    /// - Effects:
+    ///   * Status set to Rejected, escrow returned to issuer.
+    ///   * Offer storage entry deleted and cleanup event emitted.
+    /// - Emits: `OfferRejected(offerId)`, `OfferCleanedUp(offerId)`.
+    ///
+    /// @custom:reverts
+    /// - "Not offered" if `status != Offered`
+    /// - "Wrong investor" if caller is not the designated investor
     function rejectOffer(bytes32 offerId) external whenNotPaused nonReentrant {
         Offer storage o = offers[offerId];
         address investor = _msgSender();
@@ -614,27 +568,25 @@ contract AgreementManager is
         emit OfferCleanedUp(offerId);
     }
 
-    /*────────────────────── Escrow / Transfer ────────────────────*/
+    // Escrow / Transfer
 
-    /**
-     * @notice Internal escrow routine invoked by `offer(...)`.
-     *
-     * @param tokenAddress  Asset contract to escrow from `msg.sender`.
-     * @param partition     ERC-1400 partition (ignored for others).
-     * @param tokenId       ERC721/1155 id (0 for fungibles).
-     * @param amount        ERC20/1400/1155/3475 quantity (1 for single ERC721).
-     * @param classId       ERC-3475 class id (0 for others).
-     * @param nonceId       ERC-3475 nonce id (0 for others).
-     *
-     * @dev
-     * - If `tokenAddress == address(0)`, verifies escrowless params are zero and returns.
-     * - Detection order: ERC1400 -> ERC3475 -> ERC721 -> ERC1155 -> (fallback) ERC20.
-     * - Caller must have granted the contract sufficient allowance/approval/operator status.
-     *
-     * @custom:reverts
-     * - "escrowless params" when escrowless but parameters indicate asset movement.
-     * - Any revert bubbling from token contracts (e.g., insufficient approval, invalid ids).
-     */
+    /// @notice Internal escrow routine invoked by `offer(...)`.
+    ///
+    /// @param tokenAddress  Asset contract to escrow from `msg.sender`.
+    /// @param partition     ERC-1400 partition (ignored for others).
+    /// @param tokenId       ERC721/1155 id (0 for fungibles).
+    /// @param amount        ERC20/1400/1155/3475 quantity (1 for single ERC721).
+    /// @param classId       ERC-3475 class id (0 for others).
+    /// @param nonceId       ERC-3475 nonce id (0 for others).
+    ///
+    /// @dev
+    /// - If `tokenAddress == address(0)`, verifies escrowless params are zero and returns.
+    /// - Detection order: ERC1400 -> ERC3475 -> ERC721 -> ERC1155 -> (fallback) ERC20.
+    /// - Caller must have granted the contract sufficient allowance/approval/operator status.
+    ///
+    /// @custom:reverts
+    /// - "escrowless params" when escrowless but parameters indicate asset movement.
+    /// - Any revert bubbling from token contracts (e.g., insufficient approval, invalid ids).
     function _escrow(
         address tokenAddress,
         bytes32 partition,
@@ -671,15 +623,13 @@ contract AgreementManager is
         }
     }
 
-    /**
-     * @notice Internal settlement routine to deliver assets to `to`.
-     *
-     * @param to  Recipient address (issuer on cancel/reject; investor on accept).
-     * @param o   Offer storage reference (must reflect the escrowed asset).
-     *
-     * @dev Mirrors `_escrow` detection order and uses the corresponding transfer operation.
-     *      No-op for escrowless offers (`tokenAddress == address(0)`).
-     */
+    /// @notice Internal settlement routine to deliver assets to `to`.
+    ///
+    /// @param to  Recipient address (issuer on cancel/reject; investor on accept).
+    /// @param o   Offer storage reference (must reflect the escrowed asset).
+    ///
+    /// @dev Mirrors `_escrow` detection order and uses the corresponding transfer operation.
+    ///      No-op for escrowless offers (`tokenAddress == address(0)`).
     function _transfer(address to, Offer storage o) internal {
         if (o.tokenAddress == address(0)) {
             return;
@@ -699,27 +649,23 @@ contract AgreementManager is
         }
     }
 
-    /**
-     * @notice Read-only fetch of a stored Offer.
-     * @param id  offerId computed at creation.
-     * @return Offer A memory copy of the stored offer.
-     */
+    /// @notice Read-only fetch of a stored Offer.
+    /// @param id  offerId computed at creation.
+    /// @return Offer A memory copy of the stored offer.
     function getOffer(bytes32 id) external view returns (Offer memory) {
         return offers[id];
     }
 
-    /**
-     * @notice Raise a dispute record (no fund movement).
-     * @param offerId      (Optional) related offer id (use 0x0 if not applicable).
-     * @param evidenceURI  Pointer to evidence (IPFS/HTTPS).
-     *
-     * @dev
-     * - Anyone can raise; duplicates guarded by unique id hash (sender, timestamp, offerId, evidenceURI).
-     * - Effects: stores Dispute with status=Raised and emits `DisputeRaised`.
-     *
-     * @custom:reverts
-     * - "duplicate" if computed dispute id already exists.
-     */
+    /// @notice Raise a dispute record (no fund movement).
+    /// @param offerId      (Optional) related offer id (use 0x0 if not applicable).
+    /// @param evidenceURI  Pointer to evidence (IPFS/HTTPS).
+    ///
+    /// @dev
+    /// - Anyone can raise; duplicates guarded by unique id hash (sender, timestamp, offerId, evidenceURI).
+    /// - Effects: stores Dispute with status=Raised and emits `DisputeRaised`.
+    ///
+    /// @custom:reverts
+    /// - "duplicate" if computed dispute id already exists.
     function raiseDispute(bytes32 offerId, string calldata evidenceURI)
         external
         whenNotPaused
@@ -738,23 +684,21 @@ contract AgreementManager is
         emit DisputeRaised(id, offerId, _msgSender(), evidenceURI);
     }
 
-    /**
-     * @notice Update dispute status; only GUARDIAN_ROLE (e.g., ADR operator) can change status.
-     * @param id         Dispute id computed at raise-time.
-     * @param newStatus  Target status (must be one of: Acknowledged, Resolved, Rejected).
-     *
-     * @dev
-     * - Requirements:
-     *   * dispute must exist
-     *   * `newStatus` must be > Raised
-     *   * cannot set the same status repeatedly
-     * - Emits: `DisputeStatusChanged(id, newStatus)`.
-     *
-     * @custom:reverts
-     * - "unknown dispute" if not found
-     * - "invalid" if `newStatus <= Raised`
-     * - "same status" if no state change
-     */
+    /// @notice Update dispute status; only GUARDIAN_ROLE (e.g., ADR operator) can change status.
+    /// @param id         Dispute id computed at raise-time.
+    /// @param newStatus  Target status (must be one of: Acknowledged, Resolved, Rejected).
+    ///
+    /// @dev
+    /// - Requirements:
+    ///   * dispute must exist
+    ///   * `newStatus` must be > Raised
+    ///   * cannot set the same status repeatedly
+    /// - Emits: `DisputeStatusChanged(id, newStatus)`.
+    ///
+    /// @custom:reverts
+    /// - "unknown dispute" if not found
+    /// - "invalid" if `newStatus <= Raised`
+    /// - "same status" if no state change
     function setDisputeStatus(bytes32 id, DisputeStatus newStatus)
         external
         onlyRole(GUARDIAN_ROLE)
@@ -768,44 +712,32 @@ contract AgreementManager is
         emit DisputeStatusChanged(id, newStatus);
     }
 
-    /**
-     * @notice Read-only fetch of a stored Dispute.
-     * @param id  disputeId computed at raise-time.
-     * @return Dispute  Memory copy of the dispute struct.
-     */
+    /// @notice Read-only fetch of a stored Dispute.
+    /// @param id  disputeId computed at raise-time.
+    /// @return Dispute  Memory copy of the dispute struct.
     function getDispute(bytes32 id) external view returns (Dispute memory) {
         return _disputes[id];
     }
 
-    /*────────────────── PAUSABLE (A6) ──────────────────*/
+    // PAUSABLE (A6)
 
-    /**
-     * @notice Pause state-changing functions; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing functions; only PAUSER_ROLE.
     function pause()   external onlyRole(PAUSER_ROLE) { _pause();   }
 
-    /**
-     * @notice Unpause state-changing functions; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing functions; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice ERC165 support; merges parents.
-     * @param id  Interface id to probe.
-     * @return bool Whether the interface is supported.
-     */
+    /// @notice ERC165 support; merges parents.
+    /// @param id  Interface id to probe.
+    /// @return bool Whether the interface is supported.
     function supportsInterface(bytes4 id)
         public view override(AccessControlEnumerableUpgradeable, ERC1155Holder)
         returns (bool)
@@ -813,17 +745,13 @@ contract AgreementManager is
         return super.supportsInterface(id);
     }
 
-    /*────────────────────── UUPS auth ────────────────────────────*/
+    // UUPS auth
 
-    /**
-     * @notice UUPS upgrade authorization; only ADMIN_ROLE may upgrade.
-     */
+    /// @notice UUPS upgrade authorization; only ADMIN_ROLE may upgrade.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-    /*────────────────────── Storage gap ──────────────────────────*/
+    // Storage gap
 
-    /**
-     * @dev Reserved storage to allow future variable additions (per OZ guidelines).
-     */
+    /// @dev Reserved storage to allow future variable additions (per OZ guidelines).
     uint256[48] private __gap;
 }

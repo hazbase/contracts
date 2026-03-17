@@ -22,13 +22,11 @@ import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import "./extensions/RolesCommon.sol";
 import "./external/oz/metax/ERC2771ContextUpgradeable.sol";
 
-/* ─────────────  Debt-token minimal interface (ERC-3475 class) ───────────── */
-/**
- * @dev Minimal snapshot-capable interface required by this manager.
- * - `snapshot()` returns a monotonically increasing snapshot id.
- * - `balanceOfAt` & `totalSupplyAt` query snapshot states.
- * - `burn` is used when principal is paid back against surrendered units.
- */
+// Debt-token minimal interface (ERC-3475 class)
+/// @dev Minimal snapshot-capable interface required by this manager.
+/// `snapshot()` returns a monotonically increasing snapshot id.
+/// `balanceOfAt` and `totalSupplyAt` query snapshot states.
+/// `burn` is used when principal is paid back against surrendered units.
 interface IERC3475Snapshot {
     function snapshot() external returns (uint256 id);
     function balanceOf(address owner,uint256 classId,uint256 nonceId) external view returns(uint256);
@@ -76,7 +74,7 @@ contract DebtManager is
 {
     using SafeERC20 for IERC20;
 
-    /* ───────────── Library constants ───────────── */
+    // Library constants
 
     /// @notice Grace period added after coupon due date before default can be flagged.
     uint64  public constant COUPON_GRACE = 7 days;     // default grace period
@@ -85,22 +83,15 @@ contract DebtManager is
     /// @notice Grace period after maturity before issuer may sweep unclaimed coupon residuals.
     uint64  public constant SWEEP_GRACE  = 180 days;
 
-    /* ───────────── Enum ───────────── */
+    // Enum
 
-    /**
-     * @dev Tranche lifecycle:
-     * PENDING -> ACTIVE -> (CALLED | PUT_NOTICE | DEFAULTED) -> MATURED
-     * Note: PUT_NOTICE is also represented per-holder via `putNotice` mapping.
-     */
+    /// @dev Tranche lifecycle: PENDING -> ACTIVE -> (CALLED | PUT_NOTICE | DEFAULTED) -> MATURED.
+    /// `PUT_NOTICE` is also tracked per holder via `putNotice`.
     enum TrancheStatus { PENDING, ACTIVE, CALLED, PUT_NOTICE, DEFAULTED, MATURED }
 
-    /* ───────────── Structs ───────────── */
+    // Structs
 
-    /**
-     * @dev Coupon epoch metadata.
-     * - `snapshotId`: taken at payment time to freeze entitlements.
-     * - `perUnit`:   amount per 1 debt unit (integer division).
-     */
+    /// @dev Coupon epoch metadata. `snapshotId` freezes entitlements and `perUnit` stores the integer coupon payout per debt unit.
     struct CouponSchedule {
         uint64  payDate;      // coupon due date (unix)
         uint256 rateBps;      // coupon rate in 1/100 %
@@ -111,11 +102,8 @@ contract DebtManager is
         uint256 perUnit;      // payout per debt unit at snapshot
     }
 
-    /**
-     * @dev Tranche state for a (token,class,nonce).
-     * - `requiredPrincipal` grows/shrinks with supply and represents total principal yet to be funded.
-     * - `principalPool` is the funded principal balance held by this contract.
-     */
+    /// @dev Tranche state for a `(token,class,nonce)` tuple.
+    /// `requiredPrincipal` tracks unfunded principal, while `principalPool` tracks funded principal held by this contract.
     struct Tranche {
         uint256 cachedSupply;
         uint256 requiredPrincipal;
@@ -143,7 +131,7 @@ contract DebtManager is
         mapping(uint32=>mapping(address=>bool)) claimed;          // epoch -> holder -> claimed?
     }
 
-    /* ───────────── Storage ───────────── */
+    // Storage
 
     /// @dev Tranche registry; index is used in external API.
     Tranche[] private _tranches;
@@ -154,7 +142,7 @@ contract DebtManager is
     /// @dev Last funding block per tranche; used by `noSameBlockFund` to delay payouts.
     mapping(uint256 => uint64) private _lastFundBlock;
 
-    /* ───────────── Events ───────────── */
+    // Events
 
     event TrancheCreated(uint256 indexed idx, uint64 maturity);
     event CouponScheduleAdded(uint256 indexed idx, uint32 epoch, uint64 payDate, uint256 rateBps);
@@ -170,70 +158,55 @@ contract DebtManager is
     event PrincipalFunded(uint256 indexed idx, uint256 amount);
     event SupplyAdjusted(uint256 indexed idx, int256 dUnits, int256 dPrincipal);
 
-    /* ───────────── Modifiers ───────────── */
+    // Modifiers
 
-    /**
-     * @dev Require tranche status == ACTIVE.
-     * @param idx Tranche index.
-     */
+    /// @dev Require tranche status == ACTIVE.
+    /// @param idx Tranche index.
     modifier onlyActive(uint256 idx) {
         require(_tranches[idx].status == TrancheStatus.ACTIVE, "not ACTIVE");
         _;
     }
 
-    /**
-     * @dev Require tranche status in {PENDING, ACTIVE}.
-     * @param idx Tranche index.
-     */
+    /// @dev Require tranche status in {PENDING, ACTIVE}.
+    /// @param idx Tranche index.
     modifier trancheOpen(uint256 idx){
         TrancheStatus s=_tranches[idx].status;
         require(s==TrancheStatus.PENDING||s==TrancheStatus.ACTIVE,"closed");
         _;
     }
 
-    /**
-     * @dev Require principalPool >= requiredPrincipal for tranche.
-     * @param idx Tranche index.
-     */
+    /// @dev Require principalPool >= requiredPrincipal for tranche.
+    /// @param idx Tranche index.
     modifier principalCovered(uint256 idx) {
         Tranche storage t = _tranches[idx];
         require(t.principalPool >= t.requiredPrincipal, "PRINCIPAL_NOT_FUNDED");
         _;
     }
 
-    /**
-     * @dev Require `amount > 0`.
-     */
+    /// @dev Require `amount > 0`.
     modifier nonZero(uint256 amount) {
         require(amount > 0, "zero amount");
         _;
     }
 
-    /**
-     * @dev Enforce that at least one funding exists, and ≥5 blocks have passed since last funding.
-     *      Reduces fund-and-immediately-withdraw risk.
-     * @param idx Tranche index.
-     */
+    /// @dev Enforce that at least one funding exists and >=5 blocks have passed since the last funding.
+    /// This reduces fund-and-immediately-withdraw risk.
+    /// @param idx Tranche index.
     modifier noSameBlockFund(uint256 idx) {
         require(_lastFundBlock[idx] != 0, "NOT_FUNDED_YET");
         require(block.number > _lastFundBlock[idx] + 5, "WAIT_FEW_BLOCKS");
         _;
     }
 
-    /* ───────────── Initializer / UUPS ───────────── */
+    // Initializer and UUPS
 
-    /**
-     * @notice Disable initializers for implementation contract.
-     */
+    /// @notice Disable initializers for the implementation contract.
     constructor() { _disableInitializers(); }
 
-    /**
-     * @notice Initialize the manager (proxy).
-     * @param admin       Admin address (granted ADMIN/MINTER/PAUSER via RolesCommon).
-     * @param forwarders  Trusted ERC-2771 forwarders.
-     *
-     * @dev Grants MINTER_ROLE to `admin`. No events emitted.
-     */
+    /// @notice Initialize the manager proxy.
+    /// @param admin Admin address granted ADMIN, MINTER, and PAUSER via RolesCommon.
+    /// @param forwarders Trusted ERC-2771 forwarders.
+    /// @dev Grants `MINTER_ROLE` to `admin`. No events are emitted here.
     function initialize(
         address admin,
         address[] calldata forwarders
@@ -247,33 +220,27 @@ contract DebtManager is
         _grantRole(MINTER_ROLE, admin);
     }
 
-    /* ───────────── Admin: tranche creation ───────────── */
+    // Admin: tranche creation
 
-    /**
-     * @notice Create a new tranche for (token,class,nonce) and register uniqueness.
-     * @param token             ERC-3475 snapshot token.
-     * @param classId           Class id.
-     * @param nonceId           Nonce id.
-     * @param principalToken    ERC20 used for principal payments.
-     * @param principalPerUnit  Principal value per debt unit.
-     * @param couponToken       ERC20 used for coupon payments.
-     * @param maturity          UNIX timestamp of maturity.
-     * @param callPriceBps      Call payout as bps of principal (≤ 10_000).
-     * @param putPriceBps       Put payout as bps of principal (≤ 10_000).
-     * @param callNoticeSec     Notice period (seconds) before call can be executed.
-     * @param putNoticeSec      Notice period (seconds) after holder’s put notice.
-     * @return idx              Tranche index.
-     *
-     * @dev
-     * - Computes `requiredPrincipal = principalPerUnit * totalSupply`.
-     * - Registers uniqueness guard in `_activeRegistry`.
-     * - Sets status to PENDING; becomes ACTIVE when first coupon is added.
-     *
-     * @custom:reverts maturity past    if maturity ≤ now
-     * @custom:reverts duplicate        if (token,class,nonce) already active
-     * @custom:reverts bps>100%         if call/put bps > 10_000
-     * @custom:reverts overflow         if multiplication overflows uint256
-     */
+    /// @notice Create a new tranche for `(token, class, nonce)` and register uniqueness.
+    /// @param token ERC-3475 snapshot token.
+    /// @param classId Class id.
+    /// @param nonceId Nonce id.
+    /// @param principalToken ERC20 used for principal payments.
+    /// @param principalPerUnit Principal value per debt unit.
+    /// @param couponToken ERC20 used for coupon payments.
+    /// @param maturity UNIX timestamp of maturity.
+    /// @param callPriceBps Call payout as bps of principal (<= 10_000).
+    /// @param putPriceBps Put payout as bps of principal (<= 10_000).
+    /// @param callNoticeSec Notice period in seconds before call can be executed.
+    /// @param putNoticeSec Notice period in seconds after a holder files put notice.
+    /// @return idx Tranche index.
+    /// @dev Computes `requiredPrincipal = principalPerUnit * totalSupply`, registers uniqueness in
+    /// `_activeRegistry`, and leaves the tranche in `PENDING` until the first coupon is added.
+    /// @custom:reverts maturity past if maturity <= now
+    /// @custom:reverts duplicate if `(token,class,nonce)` is already active
+    /// @custom:reverts bps>100% if call or put bps is above 10_000
+    /// @custom:reverts overflow if multiplication overflows uint256
     function createTranche(
         IERC3475Snapshot token,
         uint256 classId,
@@ -314,18 +281,15 @@ contract DebtManager is
         emit TrancheCreated(idx,maturity);
     }
 
-    /* ───────────── Admin: add coupon schedule ───────────── */
+    // Admin: add coupon schedule
 
-    /**
-     * @notice Append a coupon epoch (must be strictly increasing and before maturity).
-     * @param idx      Tranche index.
-     * @param payDate  Coupon due date (unix).
-     * @param rateBps  Coupon rate in bps (informational).
-     *
-     * @dev First append moves status PENDING → ACTIVE and initializes `nextUnpaid`.
-     * @custom:reverts after maturity if payDate ≥ maturity
-     * @custom:reverts outoforder    if not strictly increasing by `payDate`
-     */
+    /// @notice Append a coupon epoch that is strictly increasing and before maturity.
+    /// @param idx Tranche index.
+    /// @param payDate Coupon due date (unix).
+    /// @param rateBps Coupon rate in bps (informational).
+    /// @dev The first append moves status from `PENDING` to `ACTIVE` and initializes `nextUnpaid`.
+    /// @custom:reverts after maturity if payDate >= maturity
+    /// @custom:reverts outoforder if coupon dates are not strictly increasing
     function addCouponSchedule(
         uint256 idx,
         uint64  payDate,
@@ -339,22 +303,19 @@ contract DebtManager is
         emit CouponScheduleAdded(idx,uint32(t.coupons.length-1),payDate,rateBps);
     }
 
-    /* ───────────── Admin: pay coupon & set snapshot ───────────── */
+    // Admin: pay coupon and set snapshot
 
-    /**
-     * @notice Provision coupon funds and take a snapshot for the given epoch.
-     * @param idx          Tranche index.
-     * @param epoch        Coupon epoch index.
-     * @param totalAmount  Total ERC20 amount to distribute for this epoch.
-     *
-     * @dev Transfers `totalAmount` from caller; sets `snapshotId` and `perUnit`.
-     * @custom:reverts zero     if totalAmount == 0
-     * @custom:reverts bad status if tranche not ACTIVE
-     * @custom:reverts epoch!   if epoch is out of range
-     * @custom:reverts paid     if epoch already paid
-     * @custom:reverts early    if called before `payDate`
-     * @custom:reverts redeemed if total supply at snapshot is 0
-     */
+    /// @notice Provision coupon funds and take a snapshot for the given epoch.
+    /// @param idx Tranche index.
+    /// @param epoch Coupon epoch index.
+    /// @param totalAmount Total ERC20 amount to distribute for this epoch.
+    /// @dev Transfers `totalAmount` from the caller, records `snapshotId`, and computes `perUnit`.
+    /// @custom:reverts zero if `totalAmount == 0`
+    /// @custom:reverts bad status if tranche is not ACTIVE
+    /// @custom:reverts epoch! if epoch is out of range
+    /// @custom:reverts paid if epoch is already paid
+    /// @custom:reverts early if called before `payDate`
+    /// @custom:reverts redeemed if total supply at snapshot is 0
     function payCoupon(
         uint256 idx,
         uint32  epoch,
@@ -363,18 +324,15 @@ contract DebtManager is
         _payCouponInternal(idx, epoch, totalAmount);
     }
 
-    /**
-     * @notice Pay coupon with EIP-2612 permit on the coupon token.
-     * @param idx          Tranche index.
-     * @param epoch        Coupon epoch index.
-     * @param totalAmount  Total amount to transfer from issuer.
-     * @param deadline     Permit deadline.
-     * @param v            ECDSA v.
-     * @param r            ECDSA r.
-     * @param s            ECDSA s.
-     *
-     * @dev Calls `permit` then `_payCouponInternal`.
-     */
+    /// @notice Pay coupon with EIP-2612 permit on the coupon token.
+    /// @param idx Tranche index.
+    /// @param epoch Coupon epoch index.
+    /// @param totalAmount Total amount to transfer from issuer.
+    /// @param deadline Permit deadline.
+    /// @param v ECDSA v.
+    /// @param r ECDSA r.
+    /// @param s ECDSA s.
+    /// @dev Calls `permit` and then delegates to `_payCouponInternal`.
     function payCouponWithPermit(
         uint256 idx,
         uint32  epoch,
@@ -387,12 +345,10 @@ contract DebtManager is
         _payCouponInternal(idx, epoch, totalAmount);
     }
 
-    /**
-     * @notice Internal coupon payment entry.
-     * @param idx          Tranche index.
-     * @param epoch        Coupon epoch index.
-     * @param totalAmount  Total amount to distribute.
-     */
+    /// @notice Internal coupon payment entry.
+    /// @param idx Tranche index.
+    /// @param epoch Coupon epoch index.
+    /// @param totalAmount Total amount to distribute.
     function _payCouponInternal(
         uint256 idx,
         uint32  epoch,
@@ -422,11 +378,9 @@ contract DebtManager is
         emit CouponPaid(idx, epoch, totalAmount);
     }
 
-    /**
-     * @notice Decrease `requiredPrincipal` by `paid`, saturating at zero.
-     * @param t     Tranche storage ref.
-     * @param paid  Amount to deduct.
-     */
+    /// @notice Decrease `requiredPrincipal` by `paid`, saturating at zero.
+    /// @param t Tranche storage reference.
+    /// @param paid Amount to deduct.
     function _decreaseRequired(Tranche storage t, uint256 paid) private {
         if (t.requiredPrincipal == 0) return;
         if (paid >= t.requiredPrincipal) {
@@ -436,20 +390,17 @@ contract DebtManager is
         unchecked { t.requiredPrincipal -= paid; }
     }
 
-    /* ───────────── Investor: claim coupon ───────────── */
+    // Investor: claim coupon
 
-    /**
-     * @notice Claim coupon for an epoch based on snapshot balance.
-     * @param idx    Tranche index.
-     * @param epoch  Coupon epoch index.
-     *
-     * @dev Uses `balanceOfAt(holder, ..., snapshotId)` × `perUnit`.
-     * @custom:reverts epoch!    if out of range
-     * @custom:reverts not paid  if epoch not yet paid
-     * @custom:reverts claimed   if holder already claimed
-     * @custom:reverts zero      if computed amount is zero
-     * @custom:reverts exceeds   if `claimed + amt > totalPaid`
-     */
+    /// @notice Claim coupon for an epoch based on snapshot balance.
+    /// @param idx Tranche index.
+    /// @param epoch Coupon epoch index.
+    /// @dev Uses `balanceOfAt(holder, ..., snapshotId) * perUnit`.
+    /// @custom:reverts epoch! if epoch is out of range
+    /// @custom:reverts not paid if epoch has not been funded
+    /// @custom:reverts claimed if holder already claimed
+    /// @custom:reverts zero if computed amount is zero
+    /// @custom:reverts exceeds if `claimed + amt > totalPaid`
     function claimCoupon(
         uint256 idx,
         uint32  epoch
@@ -476,15 +427,12 @@ contract DebtManager is
         emit CouponClaimed(idx, epoch, _msgSender(), amt);
     }
 
-    /* ───────────── Call & Put ───────────── */
+    // Call and put
 
-    /**
-     * @notice Issuer notifies call; after notice period holders can execute call.
-     * @param idx Tranche index.
-     *
-     * @dev Sets `status = CALLED` and records `callNoticeTime = now`.
-     * @custom:reverts not ACTIVE via `onlyActive`
-     */
+    /// @notice Issuer notifies call; after the notice period holders can execute it.
+    /// @param idx Tranche index.
+    /// @dev Sets `status = CALLED` and records `callNoticeTime = now`.
+    /// @custom:reverts not ACTIVE via `onlyActive`
     function notifyCall(uint256 idx) external onlyRole(MINTER_ROLE) onlyActive(idx) whenNotPaused {
         Tranche storage t = _tranches[idx];
         t.callNoticeTime = uint64(block.timestamp);
@@ -492,38 +440,28 @@ contract DebtManager is
         emit CallNotified(idx);
     }
 
-    /* ───────── safeMul helpers (internal/private) ───────── */
+    // Internal safeMul helpers
 
-    /**
-     * @notice Overflow-checked multiplication.
-     */
+    /// @notice Overflow-checked multiplication.
     function _mulUint(uint256 a, uint256 b) internal pure returns (uint256 c) {
         if (a==0 || b==0) return 0;
         c = a * b;
         require(c / a == b, "mul overflow");
     }
 
-    /**
-     * @notice Multiply `x` by a bps fraction (`bps / 10_000`) safely.
-     */
+    /// @notice Multiply `x` by a bps fraction (`bps / 10_000`) safely.
     function _mulBps(uint256 x, uint256 bps) internal pure returns (uint256) {
         return _mulUint(x, bps) / BPS_DENOM;
     }
 
-    /**
-     * @notice Execute the issuer’s call: holder surrenders `amount` units and receives call price.
-     * @param idx     Tranche index.
-     * @param amount  Units to call (burn).
-     *
-     * @dev
-     * - Requires tranche CALLED and call notice satisfied.
-     * - Pays `principalPerUnit * callPriceBps / 10_000` per unit from `principalPool`.
-     * - Burns holder’s debt units and transfers principal token.
-     *
-     * @custom:reverts not called       if status != CALLED
-     * @custom:reverts notice           if call notice period not elapsed
-     * @custom:reverts PRINCIPAL_INSUFF if principalPool < pay
-     */
+    /// @notice Execute the issuer's call: holder surrenders `amount` units and receives call price.
+    /// @param idx Tranche index.
+    /// @param amount Units to call (burn).
+    /// @dev Requires the tranche to be `CALLED` and the call notice period to have elapsed.
+    /// The holder is paid `principalPerUnit * callPriceBps / 10_000` from `principalPool`.
+    /// @custom:reverts not called if status != CALLED
+    /// @custom:reverts notice if call notice period has not elapsed
+    /// @custom:reverts PRINCIPAL_INSUFF if `principalPool < pay`
     function executeCall(uint256 idx, uint256 amount)
         external nonReentrant whenNotPaused nonZero(amount) principalCovered(idx) noSameBlockFund(idx)
     {
@@ -545,13 +483,10 @@ contract DebtManager is
         emit Called(idx, _msgSender(), amount, pay);
     }
 
-    /**
-     * @notice Holder files a put notice (must hold > 0 units).
-     * @param idx Tranche index.
-     *
-     * @dev Records per-holder timestamp. Execution allowed after notice period.
-     * @custom:reverts no balance if holder has zero balance at filing time
-     */
+    /// @notice Holder files a put notice and must hold a positive balance.
+    /// @param idx Tranche index.
+    /// @dev Records a per-holder timestamp. Execution is allowed after the notice period.
+    /// @custom:reverts no balance if holder has zero balance at filing time
     function givePutNotice(uint256 idx) external onlyActive(idx) whenNotPaused {
         Tranche storage t = _tranches[idx];
         require(t.token.balanceOf(_msgSender(), t.classId, t.nonceId) > 0, "no balance");
@@ -559,16 +494,13 @@ contract DebtManager is
         emit PutNotified(idx, _msgSender());
     }
 
-    /**
-     * @notice Execute put after notice period: holder receives `putPriceBps` × principal per unit.
-     * @param idx     Tranche index.
-     * @param amount  Units to put (burn).
-     *
-     * @dev Clears notice if holder’s remaining balance becomes zero.
-     * @custom:reverts no notice        if holder did not file notice
-     * @custom:reverts notice           if notice period not elapsed
-     * @custom:reverts PRINCIPAL_INSUFF if principalPool < pay
-     */
+    /// @notice Execute put after notice period and receive `putPriceBps * principalPerUnit`.
+    /// @param idx Tranche index.
+    /// @param amount Units to put (burn).
+    /// @dev Clears the holder's notice if the remaining balance becomes zero.
+    /// @custom:reverts no notice if holder did not file notice
+    /// @custom:reverts notice if notice period has not elapsed
+    /// @custom:reverts PRINCIPAL_INSUFF if `principalPool < pay`
     function exercisePut(uint256 idx, uint256 amount)
         external nonReentrant whenNotPaused nonZero(amount) principalCovered(idx) noSameBlockFund(idx)
     {
@@ -593,14 +525,11 @@ contract DebtManager is
         emit PutExecuted(idx, _msgSender(), amount);
     }
 
-    /* ───────────── Default detection ───────────── */
+    // Default detection
 
-    /**
-     * @notice Mark tranche as DEFAULTED if the next unpaid coupon exceeds grace.
-     * @param idx Tranche index.
-     *
-     * @dev No-op if not ACTIVE or all coupons already paid.
-     */
+    /// @notice Mark tranche as DEFAULTED if the next unpaid coupon exceeds grace.
+    /// @param idx Tranche index.
+    /// @dev No-op if the tranche is not ACTIVE or if all coupons are already paid.
     function checkDefault(uint256 idx) external whenNotPaused {
         Tranche storage t = _tranches[idx];
         if (t.status != TrancheStatus.ACTIVE) return;
@@ -615,14 +544,11 @@ contract DebtManager is
         }
     }
 
-    /**
-     * @notice Notify that debt token total supply changed (e.g., external redemption/mint).
-     * @param idx Tranche index.
-     *
-     * @dev Adjusts `requiredPrincipal` by `principalPerUnit * Δunits` and updates `cachedSupply`.
-     * @custom:reverts NO_CHANGE if current equals cached
-     * @custom:reverts UNDERFLOW if a negative adjustment would underflow requiredPrincipal
-     */
+    /// @notice Notify that debt token total supply changed, for example after external redemption or mint.
+    /// @param idx Tranche index.
+    /// @dev Adjusts `requiredPrincipal` by `principalPerUnit * deltaUnits` and updates `cachedSupply`.
+    /// @custom:reverts NO_CHANGE if current equals cached
+    /// @custom:reverts UNDERFLOW if a negative adjustment would underflow `requiredPrincipal`
     function notifySupplyChange(uint256 idx) external onlyRole(MINTER_ROLE) {
         Tranche storage t = _tranches[idx];
 
@@ -645,19 +571,16 @@ contract DebtManager is
         emit SupplyAdjusted(idx, dUnits, dPrincipal);
     }
 
-    /* ───────────── Redemption at maturity ───────────── */
+    // Redemption at maturity
 
-    /**
-     * @notice Redeem principal at/after maturity (ACTIVE/PUT_NOTICE).
-     * @param idx     Tranche index.
-     * @param amount  Units to redeem (burn).
-     *
-     * @dev Pays `principalPerUnit * amount` from `principalPool` and burns debt units.
-     * @custom:reverts bad status         if not ACTIVE or PUT_NOTICE
-     * @custom:reverts not matured        if now < maturity
-     * @custom:reverts overflow           if amount * principalPerUnit would overflow
-     * @custom:reverts PRINCIPAL_INSUFF   if principalPool < pay
-     */
+    /// @notice Redeem principal at or after maturity while the tranche is ACTIVE or PUT_NOTICE.
+    /// @param idx Tranche index.
+    /// @param amount Units to redeem (burn).
+    /// @dev Pays `principalPerUnit * amount` from `principalPool` and burns the debt units.
+    /// @custom:reverts bad status if not ACTIVE or PUT_NOTICE
+    /// @custom:reverts not matured if now < maturity
+    /// @custom:reverts overflow if `amount * principalPerUnit` would overflow
+    /// @custom:reverts PRINCIPAL_INSUFF if `principalPool < pay`
     function redeemAtMaturity(uint256 idx, uint256 amount)
         external nonReentrant whenNotPaused nonZero(amount) principalCovered(idx) noSameBlockFund(idx)
     {
@@ -680,24 +603,16 @@ contract DebtManager is
         emit PrincipalRedeemed(idx, _msgSender(), amount);
     }
 
-    /* ───────────── Close tranche ───────────── */
+    // Close tranche
 
-    /**
-     * @notice Close tranche at/after maturity; optionally sweep residuals after grace.
-     * @param idx  Tranche index.
-     * @param to   Recipient of residual funds (must be non-zero).
-     *
-     * @dev
-     * - Clears active registry flag.
-     * - If now ≥ maturity + SWEEP_GRACE: sweep coupon residuals (careful when coupon/principal tokens coincide).
-     * - Else: require all coupons fully claimed (`outstandingCoupon == 0`).
-     * - Transfers remaining principalPool to `to`.
-     *
-     * @custom:reverts zero to       if `to == address(0)`
-     * @custom:reverts not matured   if now < maturity
-     * @custom:reverts defaulted     if tranche in DEFAULTED status
-     * @custom:reverts coupon pending if not all coupons claimed and within sweep grace
-     */
+    /// @notice Close tranche at or after maturity and optionally sweep residuals after grace.
+    /// @param idx Tranche index.
+    /// @param to Recipient of residual funds and principal pool (must be non-zero).
+    /// @dev Clears the active registry flag, handles coupon residual sweeping, and transfers remaining principal.
+    /// @custom:reverts zero to if `to == address(0)`
+    /// @custom:reverts not matured if now < maturity
+    /// @custom:reverts defaulted if tranche is already DEFAULTED
+    /// @custom:reverts coupon pending if not all coupons are claimable or dust-only within sweep grace
     function closeTranche(uint256 idx, address to) external nonReentrant onlyRole(MINTER_ROLE) {
         require(to != address(0), "zero to");
         Tranche storage t = _tranches[idx];
@@ -734,14 +649,11 @@ contract DebtManager is
         emit TrancheClosed(idx, to);
     }
 
-    /**
-     * @notice Fund tranche principal pool (issuer).
-     * @param idx     Tranche index.
-     * @param amount  Principal token amount to deposit.
-     *
-     * @dev Records `_lastFundBlock[idx] = block.number` to enforce payout delay.
-     * @custom:reverts zero if amount == 0
-     */
+    /// @notice Fund a tranche principal pool.
+    /// @param idx Tranche index.
+    /// @param amount Principal token amount to deposit.
+    /// @dev Records `_lastFundBlock[idx] = block.number` so payout flows enforce a delay.
+    /// @custom:reverts zero if `amount == 0`
     function depositPrincipal(uint256 idx, uint256 amount)
         external onlyRole(MINTER_ROLE) nonReentrant trancheOpen(idx)
     {
@@ -775,41 +687,35 @@ contract DebtManager is
         }
     }
 
-    /* ───────────── Bitmap helpers ───────────── */
+    // Bitmap helpers
 
-    /**
-     * @notice Check if `owner` claimed a coupon epoch.
-     * @param t    Tranche storage ref.
-     * @param ep   Epoch index.
-     * @param owner Holder address.
-     * @return bool Whether claimed.
-     */
+    /// @notice Check if `owner` claimed a coupon epoch.
+    /// @param t Tranche storage reference.
+    /// @param ep Epoch index.
+    /// @param owner Holder address.
+    /// @return Whether claimed.
     function _isClaimed(Tranche storage t, uint32 ep, address owner) internal view returns (bool) {
         return t.claimed[ep][owner];
     }
 
-    /* ───────────── Views ───────────── */
+    // Views
 
-    /**
-     * @notice Number of tranches created.
-     * @return uint256 Length of `_tranches`.
-     */
+    /// @notice Number of tranches created.
+    /// @return Length of `_tranches`.
     function tranchesLength() external view returns (uint256) { return _tranches.length; }
 
-    /**
-     * @notice Read key tranche metadata.
-     * @param idx Tranche index.
-     * @return token            Debt token address.
-     * @return classId          Class id.
-     * @return nonceId          Nonce id.
-     * @return principalToken   Principal ERC20 address.
-     * @return principalPerUnit Principal per debt unit.
-     * @return couponToken      Coupon ERC20 address.
-     * @return maturity         Maturity timestamp.
-     * @return status           Tranche status enum.
-     * @return callPriceBps     Call price bps.
-     * @return putPriceBps      Put price bps.
-     */
+    /// @notice Read key tranche metadata.
+    /// @param idx Tranche index.
+    /// @return token Debt token address.
+    /// @return classId Class id.
+    /// @return nonceId Nonce id.
+    /// @return principalToken Principal ERC20 address.
+    /// @return principalPerUnit Principal per debt unit.
+    /// @return couponToken Coupon ERC20 address.
+    /// @return maturity Maturity timestamp.
+    /// @return status Tranche status enum.
+    /// @return callPriceBps Call price bps.
+    /// @return putPriceBps Put price bps.
     function trancheInfo(uint256 idx) external view returns (
         address token,
         uint256 classId,
@@ -837,25 +743,21 @@ contract DebtManager is
         );
     }
 
-    /**
-     * @notice Number of coupon epochs for a tranche.
-     * @param idx Tranche index.
-     * @return uint256 Count of coupons.
-     */
+    /// @notice Number of coupon epochs for a tranche.
+    /// @param idx Tranche index.
+    /// @return Count of coupons.
     function couponCount(uint256 idx) external view returns (uint256) {
         return _tranches[idx].coupons.length;
     }
 
-    /**
-     * @notice Return coupon epoch metadata (without snapshot fields).
-     * @param idx Tranche index.
-     * @param ep  Epoch index.
-     * @return payDate   Due timestamp.
-     * @return rateBps   Informational rate (bps).
-     * @return paid      Whether paid.
-     * @return totalPaid Total amount provisioned.
-     * @return claimed   Total amount claimed so far.
-     */
+    /// @notice Return coupon epoch metadata without snapshot fields.
+    /// @param idx Tranche index.
+    /// @param ep Epoch index.
+    /// @return payDate Due timestamp.
+    /// @return rateBps Informational rate (bps).
+    /// @return paid Whether paid.
+    /// @return totalPaid Total amount provisioned.
+    /// @return claimed Total amount claimed so far.
     function couponMeta(uint256 idx, uint32 ep) external view returns (
         uint64 payDate,
         uint256 rateBps,
@@ -867,49 +769,35 @@ contract DebtManager is
         return (c.payDate, c.rateBps, c.paid, c.totalPaid, c.claimed);
     }
 
-    /**
-     * @notice Public view to check if `owner` claimed epoch `ep` for tranche `idx`.
-     * @return bool Whether claimed.
-     */
+    /// @notice Public view to check if `owner` claimed epoch `ep` for tranche `idx`.
+    /// @return Whether claimed.
     function isClaimed(uint256 idx, uint32 ep, address owner) external view returns (bool) {
         return _isClaimed(_tranches[idx], ep, owner);
     }
 
-    /* ───────────── Pause ───────────── */
+    // Pause control
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause()   external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /*────────────────────── UUPS auth ────────────────────────────*/
+    // UUPS authorization
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     */
+    /// @notice Authorize UUPS upgrade; only ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-    /* ───────────── Storage gap ───────────── */
+    // Storage gap
 
-    /**
-     * @dev Reserved storage to allow future variable additions while preserving layout.
-     */
+    /// @dev Reserved storage to allow future variable additions while preserving layout.
     uint256[43] private __gap;
 }

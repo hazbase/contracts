@@ -63,14 +63,12 @@ contract Splitter is
 {
     using SafeERC20 for IERC20;
 
-    /*────────────────────────── Types & Storage ─────────────────────────*/
+    // Types and storage
 
-    /**
-     * @notice A single route (recipient + share).
-     * @param dest          Recipient address (EOA or ReservePool).
-     * @param bps           Share in basis points (1..10,000). Sum of all routes must be 10,000.
-     * @param reserveBucket For ReservePool destinations: direct fallback, compensation bucket, or liquidity bucket.
-     */
+    /// @notice A single route (recipient + share).
+    /// @param dest Recipient address (EOA or ReservePool).
+    /// @param bps Share in basis points (1..10,000). Sum of all routes must be 10,000.
+    /// @param reserveBucket For ReservePool destinations: direct fallback, compensation bucket, or liquidity bucket.
     struct Route {
         address       dest;
         uint16        bps;
@@ -83,7 +81,7 @@ contract Splitter is
     /// @notice Native currency amounts that could not be delivered (by recipient address).
     mapping(address => uint256) public pendingNative;
 
-    /*────────────────────────── Events ─────────────────────────*/
+    // Events
 
     /// @notice Emitted after a split operation for ERC-20 or native path.
     event FeeSplit(uint256 total, address indexed asset, bool nativePath);
@@ -97,17 +95,13 @@ contract Splitter is
     /// @notice Emitted when a pending native balance is claimed or swept.
     event PendingClaimed(address indexed dest, uint256 amount);
 
-    /*────────────────────────── Initializer ───────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize the splitter with routes and meta-tx forwarders.
-     * @param admin       Admin address for RolesCommon (governs roles per your setup).
-     * @param _routes     Initial route array (1..10 items, sum of bps = 10,000).
-     * @param forwarders  Trusted ERC-2771 forwarders for meta-transactions.
-     *
-     * @dev Calls initializers for ERC-2771, RolesCommon, UUPS, ReentrancyGuard, and Pausable.
-     *      Validates and sets routes via `_setRoutes`.
-     */
+    /// @notice Initialize the splitter with routes and meta-tx forwarders.
+    /// @param admin Admin address for RolesCommon (governs roles per your setup).
+    /// @param _routes Initial route array (1..10 items, sum of bps = 10,000).
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Calls the OZ-style upgradeable initializers and validates routes via `_setRoutes`.
     function initialize(
         address admin,
         Route[] calldata _routes,
@@ -122,21 +116,15 @@ contract Splitter is
         _setRoutes(_routes);
     }
 
-    /*────────────────────────── ERC-20 path ───────────────────*/
+    // ERC-20 path
 
-    /**
-     * @notice Split an incoming **ERC-20** amount across routes.
-     * @param token  ERC-20 token to distribute.
-     * @param amount Nominal amount expected from the caller.
-     *
-     * @dev
-     * - Pulls `amount` via `safeTransferFrom`, then **measures actual received** `received`
-     *   to be fee-on-transfer safe.
-     * - Distributes `received` using `_distributeToken` and emits `FeeSplit`.
-     *
-     * @custom:reverts zero amt  if `amount == 0`
-     * @custom:reverts no tokens if transfer yields zero balance increase
-     */
+    /// @notice Split an incoming ERC-20 amount across routes.
+    /// @param token ERC-20 token to distribute.
+    /// @param amount Nominal amount expected from the caller.
+    /// @dev Pulls `amount` via `safeTransferFrom`, then measures the actual received amount
+    /// so fee-on-transfer tokens are handled safely before distribution.
+    /// @custom:reverts zero amt if `amount == 0`
+    /// @custom:reverts no tokens if transfer yields zero balance increase
     function routeERC20(IERC20 token, uint256 amount) external nonReentrant {
         require(amount > 0, "zero amt");
         uint256 balBefore = token.balanceOf(address(this));
@@ -149,9 +137,8 @@ contract Splitter is
     }
 
     /// @notice Sweep entire ERC20 balance held by this contract and split by current routes.
-    /// @dev 
-    /// - Permissionless trigger: anyone can call to distribute already-held balances.
-    /// - Remainder handling is delegated to `_distributeToken` (index 0 receives residue by design).
+    /// @dev Permissionless trigger: anyone can call to distribute already-held balances.
+    /// Remainder handling is delegated to `_distributeToken`, where index 0 receives the residue by design.
     function sweepERC20(IERC20 token) external nonReentrant {
         uint256 bal = token.balanceOf(address(this));
         if (bal == 0) return;
@@ -159,40 +146,31 @@ contract Splitter is
         emit FeeSplit(bal, address(token), false);
     }
 
-    /*────────────────────────── Native path ───────────────────*/
+    // Native path
 
-    /**
-     * @notice Split **native ETH** across routes.
-     * @dev Calls `_distributeNative(msg.value)` and emits `FeeSplit`.
-     *
-     * @custom:reverts zero value if `msg.value == 0`
-     */
+    /// @notice Split native ETH across routes.
+    /// @dev Calls `_distributeNative(msg.value)` and emits `FeeSplit`.
+    /// @custom:reverts zero value if `msg.value == 0`
     function routeNative() external payable nonReentrant {
         require(msg.value > 0, "zero value");
         _distributeNative(msg.value);
         emit FeeSplit(msg.value, address(0), true);
     }
 
-    /*────────────────────────── Governance: routes ────────────*/
+    // Governance: routes
 
-    /**
-     * @notice Update routes (governance).
-     * @param _routes New route set (1..10 entries; sum of bps must equal 10,000).
-     *
-     * @dev Only `GOVERNOR_ROLE`. Delegates validation to `_setRoutes`.
-     */
+    /// @notice Update routes (governance).
+    /// @param _routes New route set (1..10 entries; sum of bps must equal 10,000).
+    /// @dev Only `GOVERNOR_ROLE`. Delegates validation to `_setRoutes`.
     function setRoutes(Route[] calldata _routes) external onlyRole(GOVERNOR_ROLE) {
         _setRoutes(_routes);
     }
 
-    /*────────────────────────── Pending native ─────────────────*/
+    // Pending native
 
-    /**
-     * @notice Claim your **pending native** balance accrued from previous failed deliveries.
-     * @dev Sends current `pendingNative[msg.sender]` and emits `PendingClaimed`.
-     *
-     * @custom:reverts no pending if caller has no pending balance
-     */
+    /// @notice Claim your pending native balance accrued from previous failed deliveries.
+    /// @dev Sends current `pendingNative[msg.sender]` and emits `PendingClaimed`.
+    /// @custom:reverts no pending if caller has no pending balance
     function claimPendingNative() external nonReentrant {
         uint256 amt = pendingNative[_msgSender()];
         require(amt > 0, "no pending");
@@ -201,15 +179,11 @@ contract Splitter is
         emit PendingClaimed(_msgSender(), amt);
     }
 
-    /**
-     * @notice Sweep (send) a specific amount from `dest`’s pending native to the same `dest`.
-     * @param dest   Destination whose pending balance to sweep.
-     * @param amount Amount to sweep (≤ pendingNative[dest]).
-     *
-     * @dev Only `GOVERNOR_ROLE`. Reuses `_safeNativeSendOrPend`. Emits `PendingClaimed`.
-     *
-     * @custom:reverts exceed if `amount > pendingNative[dest]`
-     */
+    /// @notice Sweep a specific amount from `dest`'s pending native to the same `dest`.
+    /// @param dest Destination whose pending balance to sweep.
+    /// @param amount Amount to sweep (<= pendingNative[dest]).
+    /// @dev Only `GOVERNOR_ROLE`. Reuses `_safeNativeSendOrPend` and emits `PendingClaimed`.
+    /// @custom:reverts exceed if `amount > pendingNative[dest]`
     function sweepPendingNative(address dest, uint256 amount) external onlyRole(GOVERNOR_ROLE) nonReentrant {
         require(pendingNative[dest] >= amount, "exceed");
         pendingNative[dest] -= amount;
@@ -217,18 +191,14 @@ contract Splitter is
         emit PendingClaimed(dest, amount);
     }
 
-    /*────────────────────────── Internals (ERC-20) ───────────*/
+    // Internal helpers: ERC-20
 
-    /**
-     * @notice Send ERC-20 according to the route definition, preferring ReservePool API and falling back to transfer.
-     * @param route Route metadata.
-     * @param token ERC-20 token to send.
-     * @param amt   Amount to send.
-     *
-     * @dev If `route.dest` is a contract and the route selects a ReservePool bucket, attempts the
-     *      corresponding ReservePool funding call first. If that call reverts, falls back to
-     *      `safeTransfer(route.dest, amt)`.
-     */
+    /// @notice Send ERC-20 according to the route definition, preferring ReservePool API and falling back to transfer.
+    /// @param route Route metadata.
+    /// @param token ERC-20 token to send.
+    /// @param amt Amount to send.
+    /// @dev If `route.dest` is a contract and the route selects a ReservePool bucket, this tries the
+    /// corresponding ReservePool funding call first and falls back to `safeTransfer` on failure.
     function _sendReservePoolOrDirect(Route memory route, IERC20 token, uint256 amt) internal {
         address dest = route.dest;
         if (dest.code.length > 0) {
@@ -251,14 +221,11 @@ contract Splitter is
         }
     }
 
-    /**
-     * @notice Distribute ERC-20 `actualAmount` across `routes` with running-sum remainder to index 0.
-     * @param token        ERC-20 token.
-     * @param actualAmount Amount to distribute (already measured).
-     *
-     * @dev If only one route exists, sends entire amount to it. For multiple routes, indices 1..N-1
-     *      receive `(amount * bps / 10000)` each; **index 0** receives `amount − distributed` to absorb dust.
-     */
+    /// @notice Distribute ERC-20 `actualAmount` across `routes` with running-sum remainder to index 0.
+    /// @param token ERC-20 token.
+    /// @param actualAmount Amount to distribute (already measured).
+    /// @dev If only one route exists, the full amount goes there. Otherwise indices 1..N-1 receive
+    /// exact bps shares and index 0 receives the remainder so dust never escapes the route set.
     function _distributeToken(IERC20 token, uint256 actualAmount) internal {
         uint256 len = routes.length;
         if (len == 1) {
@@ -276,14 +243,11 @@ contract Splitter is
         }
     }
 
-    /*────────────────────────── Internals (Native) ───────────*/
+    // Internal helpers: native
 
-    /**
-     * @notice Distribute native ETH `amount` across routes (remainder to index 0).
-     * @param amount Amount of ETH to distribute (wei).
-     *
-     * @dev Uses `_safeNativeSendOrPend` to deliver funds; on failure, accumulates `pendingNative`.
-     */
+    /// @notice Distribute native ETH `amount` across routes (remainder to index 0).
+    /// @param amount Amount of ETH to distribute (wei).
+    /// @dev Uses `_safeNativeSendOrPend` for delivery and accrues failed sends into `pendingNative`.
     function _distributeNative(uint256 amount) internal {
         uint256 len = routes.length;
         if (len == 1) {
@@ -301,11 +265,9 @@ contract Splitter is
         }
     }
 
-    /**
-     * @notice Attempt to deliver native ETH; on failure, record as pending for later claim.
-     * @param route Route metadata.
-     * @param value Amount of ETH to send (wei).
-     */
+    /// @notice Attempt to deliver native ETH; on failure, record as pending for later claim.
+    /// @param route Route metadata.
+    /// @param value Amount of ETH to send (wei).
     function _safeNativeSendOrPend(Route memory route, uint256 value) private {
         address dest = route.dest;
         bool ok;
@@ -336,20 +298,16 @@ contract Splitter is
         }
     }
 
-    /*────────────────────────── Route validation ─────────────*/
+    // Route validation
 
-    /**
-     * @notice Validate and set the route array.
-     * @param _routes New routes to activate (1..10 entries; each bps ∈ [1, 10,000]).
-     *
-     * @dev Clears previous routes, validates each entry, enforces sum == 10,000, then stores.
-     *
-     * @custom:reverts len          if `_routes.length == 0` or `> 10`
-     * @custom:reverts zero dest    if any `dest == address(0)`
-     * @custom:reverts bps          if any `bps == 0` or `> 10,000`
-     * @custom:reverts bucket       if reserveBucket is outside the known enum range
-     * @custom:reverts sum!=100%    if total bps != 10,000
-     */
+    /// @notice Validate and set the route array.
+    /// @param _routes New routes to activate (1..10 entries; each bps in [1, 10,000]).
+    /// @dev Clears previous routes, validates each entry, enforces sum == 10,000, then stores.
+    /// @custom:reverts len if `_routes.length == 0` or `> 10`
+    /// @custom:reverts zero dest if any `dest == address(0)`
+    /// @custom:reverts bps if any `bps == 0` or `> 10,000`
+    /// @custom:reverts bucket if reserveBucket is outside the known enum range
+    /// @custom:reverts sum!=100% if total bps != 10,000
     function _setRoutes(Route[] calldata _routes) internal {
         require(_routes.length > 0 && _routes.length <= 10, "len");
         uint256 sum;
@@ -365,45 +323,32 @@ contract Splitter is
         emit RoutesUpdated();
     }
 
-    /*────────────────────────── Pausable ─────────────────────*/
+    // Pause control
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause()   external onlyRole(PAUSER_ROLE) { _pause();   }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /*────────────────────────── Upgrade authorization ─────────*/
+    // Upgrade authorization
 
-    /**
-     * @notice Authorize UUPS upgrade; only `GOVERNOR_ROLE`.
-     * @param newImpl Proposed implementation address (unused; validation is role-based).
-     */
+    /// @notice Authorize UUPS upgrade; only `GOVERNOR_ROLE`.
+    /// @param newImpl Proposed implementation address (unused; validation is role-based).
     function _authorizeUpgrade(address newImpl) internal override onlyRole(GOVERNOR_ROLE) {}
 
-    /*────────────────────────── Fallback (ETH) ───────────────*/
+    // ETH receive path
 
-    /**
-     * @notice Receive hook: auto-distribute directly sent ETH using current routes.
-     * @dev Ignores zero-value transfers or when no routes are configured.
-     *      Emits `FeeSplit` after distribution.
-     */
+    /// @notice Receive hook: auto-distribute directly sent ETH using current routes.
+    /// @dev Ignores zero-value transfers or when no routes are configured and emits `FeeSplit` after distribution.
     receive() external payable {
         if (msg.value == 0 || routes.length == 0) return;
         _distributeNative(msg.value);

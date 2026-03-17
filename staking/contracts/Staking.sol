@@ -25,7 +25,7 @@ import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "./extensions/RolesCommon.sol";
 import "./external/oz/metax/ERC2771ContextUpgradeable.sol";
 
-/* ───── Whitelist registry (optional) ───── */
+// Optional whitelist registry
 interface IWhitelist { function isWhitelisted(address) external view returns (bool); }
 
 /**
@@ -64,7 +64,7 @@ contract Staking is
 {
     using SafeERC20 for IERC20;
 
-    /*─────────────────────── Pool & reward configuration ─────────────────────*/
+    // Pool and reward configuration
 
     /// @notice ERC20 token used to pay rewards (immutable after init).
     IERC20  public rewardToken;
@@ -84,13 +84,10 @@ contract Staking is
     /// @notice Rounding precision for user-visible payouts (≤ 18).
     uint8   public rewardPrecision = 18;
 
-    /*──────────────────────────── Staking state ────────────────────────────*/
+    // Staking state
 
-    /**
-     * @dev Per-user position for a (token, tokenId).
-     * - `shares`: normalized shares (ERC20: amount; ERC721: count; ERC1155: units).
-     * - `rewardDebt`: accumulator checkpoint (shares * accRewardPerShare / 1e18).
-     */
+    /// @dev Per-user position for a `(token, tokenId)` bucket.
+    /// `shares` are normalized stake units and `rewardDebt` checkpoints the accumulator at the user's last interaction.
     struct Position {
         uint256 shares;
         uint256 rewardDebt;
@@ -126,18 +123,10 @@ contract Staking is
     /// @notice Last stake time per user (enforces cooldown).
     mapping(address => uint256) public lastStakeAt;
 
-    /*──────────────────────────── Scheduled actions ─────────────────────────*/
+    // Scheduled actions
 
-    /**
-     * @dev Admin-scheduled action executed via `executeAction`.
-     * - `executeAfter` : earliest timestamp to run.
-     * - `target`       : destination contract.
-     * - `value`        : ETH value to send with call.
-     * - `data`         : calldata (must include 4-byte selector).
-     * - `recurring`    : if true, reschedules by `interval` on success.
-     * - `interval`     : recurrence interval in seconds.
-     * - `executed`     : set true for one-shot after execution (or if recurring fails once).
-     */
+    /// @dev Admin-scheduled action executed via `executeAction`.
+    /// Stores the due time, destination call, optional recurrence, and one-shot execution state.
     struct Action {
         uint64  executeAfter;
         address target;
@@ -149,7 +138,7 @@ contract Staking is
     }
     Action[] private _actions;
 
-    /*────────────────────────────── Events ──────────────────────────────*/
+    // Events
 
     event Staked  (address indexed user, address indexed token, uint256 id, uint256 amount);
     event Unstaked(address indexed user, address indexed token, uint256 id, uint256 amount);
@@ -160,28 +149,22 @@ contract Staking is
     event DepositFeeUpdated(uint16 _bps, address _treasury);
     event TokenArrowed(address indexed token, bool allowed);
 
-    /*──────────────────────────── Initializer ───────────────────────────*/
+    // Initialization
 
-    /**
-     * @notice Disable initializers for the implementation (UUPS pattern).
-     */
+    /// @notice Disable initializers for the implementation contract.
     constructor() { _disableInitializers(); }
     
-    /**
-     * @notice Initialize the staking pool.
-     * @param admin             Admin address (granted roles via RolesCommon).
-     * @param _rewardToken      ERC20 used for rewards.
-     * @param _duration         Emission duration for each `deposit()` cycle.
-     * @param _cooldownSecs     Stake cooldown in seconds (0 to disable).
-     * @param _depositFeeBps    Deposit fee in bps (0..500; 500 = 5%).
-     * @param _feeTreasury      Recipient of deposit fees (address(0) ⇒ burn).
-     * @param _initialArrowlist List of token addresses initially allowed for staking.
-     * @param forwarders        Trusted ERC-2771 forwarders for meta-transactions.
-     *
-     * @dev Sets initial emission state to 0 and finishAt=now; roles and meta-tx set up.
-     *
-     * @custom:reverts bad params if `_rewardToken == 0` or `_duration == 0`
-     */
+    /// @notice Initialize the staking pool.
+    /// @param admin Admin address granted hazBase shared roles.
+    /// @param _rewardToken ERC20 used for rewards.
+    /// @param _duration Emission duration for each `deposit()` cycle.
+    /// @param _cooldownSecs Stake cooldown in seconds, where `0` disables it.
+    /// @param _depositFeeBps Deposit fee in basis points.
+    /// @param _feeTreasury Recipient of deposit fees, or zero to burn.
+    /// @param _initialArrowlist Token addresses initially allowed for staking.
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Sets the pool to an idle emission state with `finishAt = lastUpdate = block.timestamp`.
+    /// @custom:reverts bad params if `_rewardToken == 0` or `_duration == 0`
     function initialize(
         address admin,
         address _rewardToken,
@@ -216,20 +199,13 @@ contract Staking is
         }
     }
 
-    /*──────────────────────────── Admin economics ───────────────────────*/
+    // Admin economics
 
-    /**
-     * @notice Fund rewards and (re)start emission.
-     * @param amount Amount of `rewardToken` to deposit for emissions.
-     *
-     * @dev
-     * - Pulls `amount` from caller (ADMIN_ROLE) and increases `reservedReward`.
-     * - Computes leftover = remaining time * current `rewardRate` if emission still active.
-     * - Sets `rewardRate = (amount + leftover) / rewardsDuration`, updates `finishAt` and `lastUpdate`.
-     *
-     * @custom:reverts zero if `amount == 0`
-     * @custom:reverts rate=0 if computed `rewardRate == 0`
-     */
+    /// @notice Fund rewards and restart or extend emissions.
+    /// @param amount Amount of `rewardToken` to deposit for emissions.
+    /// @dev Rolls leftover emissions into the new rate, updates `finishAt`, and increases `reservedReward`.
+    /// @custom:reverts zero if `amount == 0`
+    /// @custom:reverts rate=0 if the computed `rewardRate == 0`
     function deposit(uint256 amount)
         external
         onlyRole(ADMIN_ROLE)
@@ -255,15 +231,11 @@ contract Staking is
         lastUpdate = block.timestamp;
     }
 
-    /**
-     * @notice Withdraw leftover rewards back to `to` after emission ended.
-     * @param to Address to receive leftover `rewardToken`.
-     *
-     * @dev Only ADMIN_ROLE and only when `block.timestamp > finishAt`. Resets `reservedReward` to 0.
-     *
-     * @custom:reverts period active if emission window not finished
-     * @custom:reverts none          if no leftover in `reservedReward`
-     */
+    /// @notice Withdraw leftover rewards back to `to` after emissions have ended.
+    /// @param to Address to receive leftover `rewardToken`.
+    /// @dev Only ADMIN_ROLE may call, and only after `finishAt`. Resets `reservedReward` to zero.
+    /// @custom:reverts period active if the emission window has not finished
+    /// @custom:reverts none if there is no leftover in `reservedReward`
     function withdraw(address to)
         external
         nonReentrant
@@ -278,35 +250,26 @@ contract Staking is
         rewardToken.safeTransfer(to, leftover);
     }
 
-    /**
-     * @notice Set stake cooldown in seconds (0 disables).
-     * @param _secs Cooldown duration.
-     */
+    /// @notice Set the stake cooldown in seconds, where `0` disables it.
+    /// @param _secs Cooldown duration.
     function setCooldown(uint64 _secs) external whenNotPaused onlyRole(ADMIN_ROLE) {
         cooldownSecs = _secs;
         emit CooldownUpdated(_secs);
     }
 
-    /**
-     * @notice Set rounding precision (≤ 18) for user-visible rewards.
-     * @param p Number of decimals retained when rounding down payouts.
-     *
-     * @custom:reverts too large if `p > 18`
-     */
+    /// @notice Set rounding precision for user-visible rewards.
+    /// @param p Number of decimals retained when rounding down payouts.
+    /// @custom:reverts too large if `p > 18`
     function setRewardPrecision(uint8 p) external whenNotPaused onlyRole(ADMIN_ROLE) {
         require(p <= 18, "too large");
         rewardPrecision = p;
     }
 
-    /**
-     * @notice Configure deposit fee and fee recipient.
-     * @param _bps      Fee in basis points (0..500).
-     * @param _treasury Recipient of fees (address(0) ⇒ burn).
-     *
-     * @dev Emits `DepositFeeUpdated`.
-     *
-     * @custom:reverts max 5 % if `_bps > 500`
-     */
+    /// @notice Configure the deposit fee and fee recipient.
+    /// @param _bps Fee in basis points.
+    /// @param _treasury Recipient of fees, or zero to burn.
+    /// @dev Emits `DepositFeeUpdated`.
+    /// @custom:reverts max 5 % if `_bps > 500`
     function setDepositFee(uint16 _bps, address _treasury)
         external
         whenNotPaused
@@ -318,13 +281,10 @@ contract Staking is
         emit DepositFeeUpdated(_bps, _treasury);
     }
 
-    /**
-     * @notice Allow or disallow a token for staking (arrowlist).
-     * @param token   Asset address.
-     * @param allowed True to allow, false to disallow.
-     *
-     * @dev Emits `TokenArrowed`.
-     */
+    /// @notice Allow or disallow a token for staking.
+    /// @param token Asset address.
+    /// @param allowed True to allow, false to disallow.
+    /// @dev Emits `TokenArrowed`.
     function setArrowlist(address token, bool allowed)
         external
         whenNotPaused
@@ -334,37 +294,27 @@ contract Staking is
         emit TokenArrowed(token, allowed);
     }
 
-    /**
-     * @notice Enforce whitelist (KYC) check for `sender` if a registry is configured.
-     * @param sender Address to check.
-     *
-     * @custom:reverts SENDER_NOT_WHITELISTED if registry exists and sender is not whitelisted
-     */
+    /// @notice Enforce the whitelist check for `sender` if a registry is configured.
+    /// @param sender Address to check.
+    /// @custom:reverts SENDER_NOT_WHITELISTED if a registry exists and the sender is not whitelisted
     function _enforceWL(address sender) internal view {
         if (address(whitelist) == address(0)) return;         // registry not set ⟹ no checks
         require(whitelist.isWhitelisted(sender), "SENDER_NOT_WHITELISTED");
     }
 
-    /*────────────────────────── Whitelist admin ─────────────────────────*/
+    // Whitelist admin
 
-    /**
-     * @notice Set (or clear) the whitelist registry.
-     * @param registry Whitelist contract address (or 0 to disable checks).
-     *
-     * @dev Only MINTER_ROLE.
-     */
+    /// @notice Set or clear the whitelist registry.
+    /// @param registry Whitelist contract address, or zero to disable checks.
+    /// @dev Only MINTER_ROLE may call.
     function setWhitelist(address registry) external whenNotPaused onlyRole(MINTER_ROLE) {
         whitelist = IWhitelist(registry);
     }
 
-    /*────────────────────────── Modifiers (internal) ─────────────────────*/
+    // Internal modifiers
 
-    /**
-     * @notice Accrue rewards into `accRewardPerShare` up to now (bounded by `finishAt`).
-     *
-     * @dev Updates `lastUpdate` to `min(now, finishAt)` and increases `accRewardPerShare`
-     *      if there are shares and time has advanced.
-     */
+    /// @notice Accrue rewards into `accRewardPerShare` up to now, bounded by `finishAt`.
+    /// @dev Updates `lastUpdate` to `min(now, finishAt)` and accrues only when shares exist and time has advanced.
     modifier updatePool() {
         uint256 end = block.timestamp < finishAt ? block.timestamp : finishAt;
         if (end > lastUpdate && totalShares > 0) {
@@ -375,48 +325,34 @@ contract Staking is
         _;
     }
 
-    /**
-     * @notice Gate functions to only whitelisted callers when registry is set.
-     */
+    /// @notice Gate functions to only whitelisted callers when a registry is configured.
     modifier onlyWhitelisted() {
         require(address(whitelist) == address(0) || whitelist.isWhitelisted(_msgSender()), "addr not whitelisted");
         _;
     }
 
-    /*────────────────────────── Private helpers ─────────────────────────*/
+    // Private helpers
 
-    /**
-     * @notice Compute pending (unrounded) reward for a position at current accumulator.
-     * @param p Position snapshot (shares + rewardDebt).
-     * @return uint256 Raw pending reward (no rounding).
-     */
+    /// @notice Compute the pending unrounded reward for a position at the current accumulator.
+    /// @param p Position snapshot.
+    /// @return uint256 Raw pending reward.
     function _pending(Position memory p) private view returns (uint256) {
         return (p.shares * accRewardPerShare) / 1e18 - p.rewardDebt;
     }
 
-    /**
-     * @notice Compute available reward liquidity (= on-chain balance − reservedReward).
-     */
+    /// @notice Compute available reward liquidity as on-chain balance minus `reservedReward`.
     function _availableLiquidity() private view returns (uint256) {
         return rewardToken.balanceOf(address(this)) - reservedReward;
     }
 
-    /**
-     * @notice Core position update (stake/unstake) and on-the-fly reward payout.
-     * @param token  Asset address.
-     * @param id     Token id (0 for ERC20).
-     * @param amount Shares delta (positive for stake, positive value passed with `add=false` for unstake).
-     * @param add    True for stake, false for unstake.
-     * @return pending Amount paid out (after rounding & cap), emitted as `RewardClaimed` if > 0.
-     *
-     * @dev
-     * - Pays out `_pending` (rounded to `rewardPrecision`) up to `reservedReward`.
-     * - Adjusts user shares and global `totalShares`.
-     * - Sets `rewardDebt = shares * accRewardPerShare / 1e18`.
-     * - Emits `RewardClaimed` if a payout occurred.
-     *
-     * @custom:reverts insufficient if unstake `amount` exceeds user shares
-     */
+    /// @notice Core position update for stake or unstake plus any pending reward payout.
+    /// @param token Asset address.
+    /// @param id Token id, where `0` is used for ERC20 positions.
+    /// @param amount Share delta to add or remove.
+    /// @param add True for stake, false for unstake.
+    /// @return pending Amount paid out after rounding and reserve capping.
+    /// @dev Emits `RewardClaimed` when a payout occurs and updates `rewardDebt` to the new checkpoint.
+    /// @custom:reverts insufficient if the unstake amount exceeds the user's shares
     function _updatePosition(
         address token,
         uint256 id,
@@ -445,19 +381,12 @@ contract Staking is
         pos.rewardDebt = (pos.shares * accRewardPerShare) / 1e18;
     }
 
-    /*────────────────────────── ERC20 stake / unstake ───────────────────*/
+    // ERC20 stake and unstake
 
-    /**
-     * @notice Stake ERC20 tokens.
-     * @param token  ERC20 to stake (must be arrowlisted).
-     * @param amount Amount to stake (>0). A deposit fee may be charged.
-     *
-     * @dev
-     * - Enforces optional cooldown and whitelist.
-     * - If `depositFeeBps != 0`, moves fee to `feeTreasury` (or burns to address(0)) then stakes the net.
-     * - Transfers `net` to the pool and updates position.
-     * - Emits `Staked`.
-     */
+    /// @notice Stake ERC20 tokens.
+    /// @param token ERC20 to stake.
+    /// @param amount Amount to stake.
+    /// @dev Enforces cooldown and optional whitelist checks, applies any deposit fee, and emits `Staked`.
     function stakeERC20(address token, uint256 amount) external onlyWhitelisted nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         require(amount > 0, "0");
@@ -487,16 +416,11 @@ contract Staking is
         emit Staked(_msgSender(), token, 0, net);
     }
 
-    /**
-     * @notice Unstake previously staked ERC20 tokens.
-     * @param token  ERC20 address.
-     * @param amount Amount to unstake.
-     *
-     * @dev If unstaking the `rewardToken` itself, ensures on-chain liquidity is sufficient.
-     *      Updates position and transfers `amount` back. Emits `Unstaked`.
-     *
-     * @custom:reverts liquidity shortfall when unstaking rewardToken beyond available liquidity
-     */
+    /// @notice Unstake previously staked ERC20 tokens.
+    /// @param token ERC20 address.
+    /// @param amount Amount to unstake.
+    /// @dev If unstaking the reward token itself, ensures on-chain liquidity is sufficient before transfer.
+    /// @custom:reverts liquidity shortfall when unstaking rewardToken beyond available liquidity
     function unstakeERC20(address token, uint256 amount) external nonReentrant updatePool {
         if (token == address(rewardToken)) {
             require(_availableLiquidity() >= amount, "liquidity shortfall");
@@ -507,15 +431,12 @@ contract Staking is
         emit Unstaked(_msgSender(), token, 0, amount);
     }
 
-    /*────────────────────────── ERC721 stake / unstake ──────────────────*/
+    // ERC721 stake and unstake
 
-    /**
-     * @notice Stake one ERC721 token.
-     * @param token   ERC721 collection (must be arrowlisted).
-     * @param tokenId Token id to stake.
-     *
-     * @dev Enforces whitelist/cooldown. Transfers the NFT to the pool, updates position, emits `Staked`.
-     */
+    /// @notice Stake one ERC721 token.
+    /// @param token ERC721 collection.
+    /// @param tokenId Token id to stake.
+    /// @dev Enforces cooldown and whitelist checks, then transfers the NFT into the pool.
     function stakeERC721(address token, uint256 tokenId) external onlyWhitelisted nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         if (cooldownSecs != 0) {
@@ -530,30 +451,22 @@ contract Staking is
         emit Staked(_msgSender(), token, tokenId, 1);
     }
 
-    /**
-     * @notice Unstake one ERC721 token.
-     * @param token   ERC721 collection.
-     * @param tokenId Token id to unstake.
-     *
-     * @dev Updates position and transfers the NFT back. Emits `Unstaked`.
-     */
+    /// @notice Unstake one ERC721 token.
+    /// @param token ERC721 collection.
+    /// @param tokenId Token id to unstake.
     function unstakeERC721(address token, uint256 tokenId) external nonReentrant updatePool {
         _updatePosition(token, tokenId, 1, false);
         IERC721(token).safeTransferFrom(address(this), _msgSender(), tokenId);
         emit Unstaked(_msgSender(), token, tokenId, 1);
     }
 
-    /*────────────────────────── ERC1155 stake / unstake ─────────────────*/
+    // ERC1155 stake and unstake
 
-    /**
-     * @notice Stake ERC1155 tokens.
-     * @param token  ERC1155 collection (must be arrowlisted).
-     * @param id     Token id to stake.
-     * @param amount Units to stake (>0). A deposit fee may be charged in units.
-     *
-     * @dev Enforces whitelist/cooldown. Burns or transfers fee in units, stakes net, updates position.
-     *      Emits `Staked`.
-     */
+    /// @notice Stake ERC1155 tokens.
+    /// @param token ERC1155 collection.
+    /// @param id Token id to stake.
+    /// @param amount Units to stake.
+    /// @dev Enforces cooldown and whitelist checks, applies any fee in units, and emits `Staked`.
     function stakeERC1155(address token, uint256 id, uint256 amount) external onlyWhitelisted nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         require(amount > 0, "0");
@@ -583,15 +496,11 @@ contract Staking is
         emit Staked(_msgSender(), token, id, net);
     }
 
-    /**
-     * @notice Unstake ERC1155 tokens.
-     * @param token  ERC1155 collection.
-     * @param id     Token id to unstake.
-     * @param amount Units to unstake.
-     *
-     * @dev If unstaking `rewardToken`, checks available liquidity. Updates position and transfers back.
-     *      Emits `Unstaked`.
-     */
+    /// @notice Unstake ERC1155 tokens.
+    /// @param token ERC1155 collection.
+    /// @param id Token id to unstake.
+    /// @param amount Units to unstake.
+    /// @dev If unstaking the reward token itself, checks available liquidity before transfer.
     function unstakeERC1155(address token, uint256 id, uint256 amount) external nonReentrant updatePool {
         if (token == address(rewardToken)) {
             require(_availableLiquidity() >= amount, "liquidity shortfall");
@@ -601,27 +510,21 @@ contract Staking is
         emit Unstaked(_msgSender(), token, id, amount);
     }
 
-    /**
-     * @notice Round down `amt` to the configured `rewardPrecision`.
-     * @param amt Raw amount in 1e18 precision.
-     * @return uint256 Rounded amount.
-     */
+    /// @notice Round down `amt` to the configured `rewardPrecision`.
+    /// @param amt Raw amount in 1e18 precision.
+    /// @return uint256 Rounded amount.
     function _round(uint256 amt) internal view returns (uint256) {
         uint256 factor = 10 ** (18 - rewardPrecision);
         return (amt / factor) * factor;
     }
 
-    /*────────────────────────── Claim reward ─────────────────────────*/
+    // Claim reward
 
-    /**
-     * @notice Claim accrued rewards for a specific (token,id) position.
-     * @param token Asset address.
-     * @param id    Token id (0 for ERC20).
-     *
-     * @dev Pays out rounded pending, updates `reservedReward` and `rewardDebt`. Emits `RewardClaimed`.
-     *
-     * @custom:reverts none if no pending reward after rounding
-     */
+    /// @notice Claim accrued rewards for a specific `(token, id)` position.
+    /// @param token Asset address.
+    /// @param id Token id, or `0` for ERC20 positions.
+    /// @dev Pays the rounded pending reward, updates `reservedReward`, and refreshes `rewardDebt`.
+    /// @custom:reverts none if no pending reward remains after rounding
     function claim(address token, uint256 id) external onlyWhitelisted nonReentrant updatePool {
         Position storage pos = _positions[token][id][_msgSender()];
         uint256 pending = _round(_pending(pos));
@@ -632,24 +535,20 @@ contract Staking is
         emit RewardClaimed(_msgSender(), pending);
     }
 
-    /*────────────────────────── Scheduled actions API ─────────────────────*/
+    // Scheduled actions API
 
-    /**
-     * @notice Schedule a call to `target` with `value` and `data`.
-     * @param target    Destination contract (non-zero).
-     * @param value     ETH value to send with the call.
-     * @param data      Calldata (must include a 4-byte selector).
-     * @param delay     Delay in seconds before first execution.
-     * @param recurring If true, reschedule on success every `interval` seconds.
-     * @param interval  Recurrence interval (required when `recurring`).
-     * @return id       Newly assigned action id.
-     *
-     * @dev Only ADMIN_ROLE. Emits `ActionScheduled`.
-     *
-     * @custom:reverts target=0   if target is zero address
-     * @custom:reverts no selector if `data.length < 4`
-     * @custom:reverts bad interval if `recurring==true` and `interval==0`
-     */
+    /// @notice Schedule a call to `target` with `value` and `data`.
+    /// @param target Destination contract.
+    /// @param value ETH value to send with the call.
+    /// @param data Calldata, which must include a selector.
+    /// @param delay Delay in seconds before first execution.
+    /// @param recurring Whether the action should reschedule itself on success.
+    /// @param interval Recurrence interval, required for recurring actions.
+    /// @return id Newly assigned action id.
+    /// @dev Only ADMIN_ROLE may schedule actions.
+    /// @custom:reverts target=0 if target is zero
+    /// @custom:reverts no selector if `data.length < 4`
+    /// @custom:reverts bad interval if `recurring == true` and `interval == 0`
     function scheduleAction(
         address target,
         uint256 value,
@@ -676,22 +575,13 @@ contract Staking is
         emit ActionScheduled(id, target, bytes4(data), execAt, recurring);
     }
 
-    /**
-     * @notice Execute a scheduled action when due; updates reward accounting around the call.
-     * @param id Action id to execute.
-     *
-     * @dev
-     * - Requires `block.timestamp ≥ executeAfter` and not already executed.
-     * - Target must be `rewardToken` or arrowlisted token to limit call surface.
-     * - Adjusts `reservedReward` if the call changes `rewardToken` balance.
-     * - Recurring: reschedules on success; one-shot: marks executed.
-     * - Emits `ActionExecuted`.
-     *
-     * @custom:reverts id    if out-of-range
-     * @custom:reverts time< if executed too early
-     * @custom:reverts done  if already executed (for one-shot)
-     * @custom:reverts target not whitelisted if destination is neither rewardToken nor arrowlisted
-     */
+    /// @notice Execute a scheduled action when it is due.
+    /// @param id Action id to execute.
+    /// @dev Restricts targets to the reward token or arrowlisted assets and adjusts `reservedReward` around the call.
+    /// @custom:reverts id if the id is out of range
+    /// @custom:reverts time< if executed too early
+    /// @custom:reverts done if already executed
+    /// @custom:reverts target not whitelisted if the destination is neither the reward token nor an arrowlisted token
     function executeAction(uint256 id) external nonReentrant updatePool {
         require(id < _actions.length, "id");
         Action storage a = _actions[id];
@@ -727,17 +617,14 @@ contract Staking is
         }
     }
 
-    /*────────────────────────── View helpers ───────────────────────────*/
+    // View helpers
 
-    /**
-     * @notice Compute raw (unrounded) pending reward for a user position at **current time**.
-     * @param token Asset address.
-     * @param id    Token id (0 for ERC20).
-     * @param user  User address.
-     * @return uint256 Unrounded pending reward.
-     *
-     * @dev Recomputes a hypothetical `_acc` reflecting accrual to `min(now, finishAt)`.
-     */
+    /// @notice Compute the raw unrounded pending reward for a user position at the current time.
+    /// @param token Asset address.
+    /// @param id Token id, or `0` for ERC20 positions.
+    /// @param user User address.
+    /// @return uint256 Unrounded pending reward.
+    /// @dev Recomputes a hypothetical accumulator reflecting accrual to `min(now, finishAt)`.
     function pendingRawReward(address token, uint256 id, address user)
         public
         view
@@ -753,13 +640,11 @@ contract Staking is
         return (p.shares * _acc) / 1e18 - p.rewardDebt;   // raw (no rounding)
     }
 
-    /**
-     * @notice Compute **rounded** pending reward for a user position.
-     * @param token Asset address.
-     * @param id    Token id (0 for ERC20).
-     * @param user  User address.
-     * @return uint256 Rounded pending reward according to `rewardPrecision`.
-     */
+    /// @notice Compute the rounded pending reward for a user position.
+    /// @param token Asset address.
+    /// @param id Token id, or `0` for ERC20 positions.
+    /// @param user User address.
+    /// @return uint256 Rounded pending reward according to `rewardPrecision`.
     function pendingReward(address token, uint256 id, address user)
         external
         view
@@ -769,86 +654,62 @@ contract Staking is
         return _round(raw);
     }
 
-    /**
-     * @notice Read a stored user position.
-     * @param token Asset address.
-     * @param id    Token id (0 for ERC20).
-     * @param user  User address.
-     * @return Position Stored position struct.
-     */
+    /// @notice Read a stored user position.
+    /// @param token Asset address.
+    /// @param id Token id, or `0` for ERC20 positions.
+    /// @param user User address.
+    /// @return Position Stored position struct.
     function position(address token, uint256 id, address user) external view returns (Position memory) {
         return _positions[token][id][user];
     }
 
-    /**
-     * @notice Number of scheduled actions.
-     */
+    /// @notice Return the number of scheduled actions.
     function actionsLength() external view returns (uint256) { return _actions.length; }
 
-    /*───────────────────── ERC721 / ERC1155 receiver hooks ─────────────────*/
+    // ERC721 / ERC1155 receiver hooks
 
-    /**
-     * @notice ERC721 safe transfer receiver hook.
-     */
+    /// @notice ERC721 safe transfer receiver hook.
     function onERC721Received(address, address, uint256, bytes calldata) external pure override returns (bytes4) {
         return IERC721Receiver.onERC721Received.selector;
     }
 
-    /**
-     * @notice ERC1155 single transfer receiver hook.
-     */
+    /// @notice ERC1155 single transfer receiver hook.
     function onERC1155Received(address, address, uint256, uint256, bytes calldata) external pure override returns (bytes4) {
         return IERC1155Receiver.onERC1155Received.selector;
     }
 
-    /**
-     * @notice ERC1155 batch transfer receiver hook.
-     */
+    /// @notice ERC1155 batch transfer receiver hook.
     function onERC1155BatchReceived(address, address, uint256[] calldata, uint256[] calldata, bytes calldata) external pure override returns (bytes4) {
         return IERC1155Receiver.onERC1155BatchReceived.selector;
     }
 
-    /*────────────────────────── Pausable ─────────────────────*/
+    // Pause and upgrade plumbing
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause()   external onlyRole(PAUSER_ROLE) { _pause();   }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice ERC165 support (merge AccessControl & receivers).
-     * @param id Interface id.
-     * @return bool Whether supported.
-     */
+    /// @notice Return ERC165 support for AccessControl plus the receiver hooks.
+    /// @param id Interface id.
+    /// @return bool Whether supported.
     function supportsInterface(bytes4 id) public view override(AccessControlEnumerableUpgradeable, IERC165) returns (bool) {
         return id == type(IERC1155Receiver).interfaceId ||
                id == type(IERC721Receiver).interfaceId ||
                super.supportsInterface(id);
     }
 
-    /*────────────────────────── UUPS auth ─────────────────────*/
-
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     * @param newImpl Proposed implementation address (unused by this guard).
-     */
+    /// @notice Authorize a UUPS upgrade; only ADMIN_ROLE.
+    /// @param newImpl Proposed implementation address.
     function _authorizeUpgrade(address newImpl) internal override onlyRole(ADMIN_ROLE) {}
 
     /// @dev Storage gap reserved for future upgrades.

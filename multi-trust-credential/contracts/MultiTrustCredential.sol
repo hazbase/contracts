@@ -18,19 +18,15 @@ import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "./extensions/RolesCommon.sol";
 import "./external/oz/metax/ERC2771ContextUpgradeable.sol";
 
-/*────────────────────────── External verifier interface ─────────────────────────*/
-/**
- * @title IVerifier
- * @notice Minimal zk-SNARK verifier interface (e.g., Groth16). Concrete circuit semantics
- *         are external; this contract only checks public signals alignment prior to call.
- */
+// External verifier interfaces
+// Minimal zk-SNARK verifier interface, for example a Groth16 verifier.
 interface IVerifier {
-    /**
-     * @notice Verify a proof for the provided public inputs (circuit-specific).
-     * @param a,b,c        Proof elements
-     * @param publicSignals Public inputs; expected indexing is circuit dependent
-     * @return bool        True if proof is valid
-     */
+    /// @notice Verify a proof for the provided public inputs (circuit-specific).
+    /// @param a Proof element a.
+    /// @param b Proof element b.
+    /// @param c Proof element c.
+    /// @param publicSignals Public inputs; expected indexing is circuit dependent.
+    /// @return True if proof is valid.
     function verifyProof(
         uint256[2] calldata a,
         uint256[2][2] calldata b,
@@ -90,11 +86,9 @@ interface IMultiTrustCredentialZKEx {
     function provePredicate(uint256,bytes32,bytes32,bytes calldata,uint256[] calldata) external view returns (bool);
 }
 
-/*────────────────────────── Operator mask helpers ─────────────────────────*/
-/**
- * @dev Bit mask for allowed comparison operators in zk checks.
- * GT=1, LT=2, EQ=4 .. combinations allowed (e.g., 1|4).
- */
+// Operator mask helpers
+/// @dev Bit mask for allowed comparison operators in zk checks.
+/// GT=1, LT=2, EQ=4; combinations such as 1|4 are allowed.
 library CompareMask {
     // Bit flags (base)
     uint16 internal constant GT  = 1 << 0; // 0b0001
@@ -109,28 +103,29 @@ library CompareMask {
     uint16 internal constant ALL  = GT | LT | EQ;
 }
 
-/**  @title MultiTrustCredential
-//
-//   @notice
-//   - Purpose: Non-transferable credential NFT (tokenId = owner address) that stores
-//     typed “metrics” per holder (e.g., reputation scores, KYC flags, commitment hashes),
-//     supports role-gated mint/update, optional ZK proof verification against stored
-//     commitments, and punitive slashing.
-//   - Design highlights:
-//       * ERC721URIStorageUpgradeable: each credential has a metadata URI.
-//       * tokenId = uint256(uint160(owner)): one token per address; minted lazily on first write.
-//       * Metric registry: admin defines metric ids, UI labels, role required, and compare mask.
-//       * Updates: writers with the required role can mint/update metrics (single/batch).
-//       * ZK verify: external `IVerifier` is used to verify a Groth16-style proof against
-//         on-chain commitment (`leafFull`) and holder address. Comparison operator permissions
-//         are enforced via `compareMask`.
-//       * Slashing: `SLASHER_ROLE` can reduce numeric metric values.
-//   - Security / Audit notes:
-//       * Metrics are keyed by (tokenId, metricId); writers must hold `metricRole[metricId]`.
-//       * `proveMetric` checks both holder binding and commitment equality before verifier call.
-//       * Mask semantics: bits 0..2 correspond to GT/LT/EQ operators (see CompareMask).
-//       * UUPS upgrade gated by ADMIN_ROLE. ERC-2771 meta-tx supported.
-*/
+/**
+ * @title MultiTrustCredential
+ *
+ * @notice
+ * - Purpose: Non-transferable credential NFT, where `tokenId = owner address`, storing
+ *   typed metrics per holder such as reputation scores, KYC flags, or commitment hashes.
+ * - Supports role-gated mint and update flows, optional ZK proof verification against stored
+ *   commitments, and punitive slashing for numeric metrics.
+ * - Design highlights:
+ *     * ERC721URIStorageUpgradeable: each credential has a metadata URI.
+ *     * `tokenId = uint256(uint160(owner))`: one token per address, minted lazily on first write.
+ *     * Metric registry: admin defines metric ids, UI labels, role required, and compare mask.
+ *     * Updates: writers with the required role can mint or update metrics, singly or in batch.
+ *     * ZK verify: external `IVerifier` verifies a proof against the stored commitment (`leafFull`)
+ *       and holder address, while `compareMask` constrains which comparisons are allowed.
+ *     * Slashing: `SLASHER_ROLE` can reduce numeric metric values.
+ *
+ * @dev SECURITY / AUDIT NOTES
+ * - Metrics are keyed by `(tokenId, metricId)`, and writers must hold `metricRole[metricId]`.
+ * - `proveMetric` checks both holder binding and commitment equality before invoking the verifier.
+ * - Mask semantics: bits 0..2 correspond to GT, LT, and EQ operators in `CompareMask`.
+ * - UUPS upgradeability is gated by ADMIN_ROLE and ERC-2771 meta-transactions are supported.
+ */
 
 contract MultiTrustCredential is
     ERC721URIStorageUpgradeable,
@@ -140,7 +135,7 @@ contract MultiTrustCredential is
     ERC2771ContextUpgradeable,
     RolesCommonUpgradeable
 {
-    /*────────────────── Interfaces ──────────────────*/
+    // Interfaces
 
     bytes4 private constant _IID_MTC_CORE =
         IMultiTrustCredentialCore.registerMetric.selector ^
@@ -158,52 +153,34 @@ contract MultiTrustCredential is
     bytes4 private constant _IID_MTC_ZK = IMultiTrustCredentialZK.proveMetric.selector;
     bytes4 private constant _IID_MTC_ZKEX = IMultiTrustCredentialZKEx.provePredicate.selector;
     
-    /*────────────────── Roles ──────────────────*/
+    // Roles
 
     /// @notice Role authorized to slash metric values.
     bytes32 public constant SLASHER_ROLE = keccak256("SLASHER_ROLE");
 
-    /*────────────────── Data ───────────────────*/
+    // Data
 
-    /**
-     * @dev Stored metric (per tokenId, metricId).
-     * - `value`     : current numeric value (or placeholder if commitment-only)
-     * - `leafFull`  : commitment/hash (circuit-dependent)
-     * - `timestamp` : last update time (seconds)
-     * - `expiresAt` : deadline of this metric. 0 indicates no expiration date.
-     */
+    /// @dev Stored metric state for a `(tokenId, metricId)` pair.
+    /// `value` is the numeric payload, `leafFull` is the anchor/commitment, `timestamp` tracks the latest write, and `expiresAt` is optional.
     struct Metric { uint32 value; uint256 leafFull; uint32 timestamp; uint32 expiresAt; }
 
-    /**
-     * @dev Input for single mint.
-     * - `uri` is set as tokenURI on first mint for the address.
-     */
+    /// @dev Input for a single mint. `uri` is written as tokenURI on first mint for the holder.
     struct MetricInput  { bytes32 metricId; uint32 value; uint256 leafFull; string uri; uint32 expiresAt; }
 
-    /**
-     * @dev Input for an update.
-     */
+    /// @dev Input for a single metric update.
     struct MetricUpdate { bytes32 metricId; uint32 newValue; uint256 leafFull; uint32 expiresAt; }
 
-    /**
-     * @dev Batch mint item; creates token if absent and sets tokenURI on first write.
-     */
+    /// @dev Batch mint item; creates the token if absent and sets tokenURI on first write.
     struct MintItem { address to; bytes32 metricId; uint32 value; uint256 leafFull; string uri; uint32 expiresAt; }
 
-    /**
-     * @dev Batch update item for an existing token.
-     */
+    /// @dev Batch update item for an existing token.
     struct UpdateItem { uint256 tokenId; bytes32 metricId; uint32 newValue; uint256 leafFull; uint32 expiresAt; }
 
     /// @dev tokenId => (metricId => Metric)
     mapping(uint256 => mapping(bytes32 => Metric)) private _metrics;
 
-    /**
-     * @notice Per-metric freeze flag for compare-mask updates.
-     * @dev When true, writers cannot change the compare operator mask via `setCompareMask`.
-     *      This is useful to stabilize policy during critical windows (e.g., governance voting).
-     *      Controlled by ADMIN_ROLE through `setMaskFrozen`.
-     */
+    /// @notice Per-metric freeze flag for compare-mask updates.
+    /// @dev When true, writers cannot change the compare operator mask via `setCompareMask`.
     mapping(bytes32 => bool) public maskFrozen;
 
     // Dynamic registry (admin-managed)
@@ -219,16 +196,8 @@ contract MultiTrustCredential is
     /// @notice metricId => predicateType => allowed flag (ZKEx).
     mapping(bytes32 => mapping(bytes32 => bool)) public predicateAllowed;
 
-    /**
-     * @dev Predicate profile for ZKEx verification.
-     * - verifier: Groth16 verifier address for this predicate
-     * - signalsLen: expected publicSignals length
-     * - anchorIndex: index of anchor/root in publicSignals (must match stored leafFull)
-     * - addrIndex: index of holder address(uint160) in publicSignals
-     * - epochIndex: index of epoch/version in publicSignals (optional)
-     * - epochCheck: if true, require publicSignals[epochIndex] == predicateEpoch[metricId][predicateType]
-     * - requireMaskZero: if true, require compareMask[metricId] == 0 (avoid mixing policies)
-     */
+    /// @dev Predicate verification profile used by ZKEx predicates.
+    /// It defines the verifier address, expected signal layout, optional epoch enforcement, and whether the base compare mask must be zero.
     struct PredicateProfile {
         address verifier;
         uint8 signalsLen;
@@ -250,7 +219,7 @@ contract MultiTrustCredential is
 
     uint8 internal constant _MASK_ALLOWED = uint8(CompareMask.GT | CompareMask.LT | CompareMask.EQ);
 
-    /*────────────────── ZK ─────────────────────*/
+    // ZK
 
     /// @notice External verifier contract for zk proof checks.
     IVerifier public verifier;
@@ -260,7 +229,7 @@ contract MultiTrustCredential is
     bytes32 public constant PREDICATE_RANGE = keccak256("RANGE");
     bytes32 public constant PREDICATE_DELTA = keccak256("DELTA");
 
-    /*────────────────── Events ─────────────────*/
+    // Events
     event MetricRegistered(bytes32 indexed id, string label, bytes32 role, uint8 mask);
     event MetricUpdated(uint256 indexed tokenId, bytes32 indexed metricId, uint32 newValue, uint256 leafFull);
     event MetricRevoked(uint256 indexed tokenId, bytes32 indexed metricId, uint32 prevValue, uint256 prevLeaf);
@@ -271,21 +240,15 @@ contract MultiTrustCredential is
     event PredicateAllowedChanged(bytes32 indexed metricId, bytes32 indexed predicateType, bool allowed, address indexed editor);
     event PredicateProfileChanged(bytes32 indexed metricId, bytes32 indexed predicateType, address verifier, uint8 signalsLen, uint8 anchorIndex, uint8 addrIndex, uint8 epochIndex, bool epochCheck, bool requireMaskZero, address indexed editor);
     event PredicateEpochChanged(bytes32 indexed metricId, bytes32 indexed predicateType, uint256 epoch, address indexed editor);
-    /*────────────────── Init ───────────────────*/
+    // Initialization
 
-    /**
-     * @notice Disable initializers for the implementation (UUPS pattern).
-     */
+    /// @notice Disable initializers for the implementation contract (UUPS pattern).
     constructor() { _disableInitializers(); }
 
-    /**
-     * @notice Initialize the credential system.
-     * @param admin       Admin address for RolesCommon (granted admin/pauser/… as configured there).
-     * @param forwarders  Trusted ERC-2771 forwarders for meta-transactions.
-     *
-     * @dev
-     * - Sets token name/symbol: "MultiTrust Credential" / "MTC".
-     */
+    /// @notice Initialize the credential system.
+    /// @param admin Admin address that receives hazBase shared roles.
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Sets the token name and symbol to `MultiTrust Credential` / `MTC`.
     function initialize(address admin, address[] calldata forwarders) external initializer {
         __ERC721_init("MultiTrust Credential", "MTC");
         __Pausable_init();
@@ -295,23 +258,19 @@ contract MultiTrustCredential is
         __RolesCommon_init(admin);
     }
 
-    /*────────────────── Registry ───────────────*/
+    // Registry
 
-    /**
-     * @notice Register a new metric type.
-     * @param id         Unique metric id (bytes32).
-     * @param label      UI label (non-empty).
-     * @param roleName   Writer role required to mint/update this metric.
-     * @param commitment If true, treat as commitment metric (hash-only semantics).
-     * @param mask       Allowed comparison ops bitmask (0..8; GT=1, LT=2, EQ=4).
-     *
-     * @dev Fails if the metric id already exists. Emits `MetricRegistered`.
-     *
-     * @custom:reverts MTC: metric exists if the id was already registered
-     * @custom:reverts bad mask           if (mask & ~_MASK_ALLOWED) == 0
-     * @custom:reverts MTC: empty label   if label has zero length
-     * @custom:reverts empty writer role  if roleName == 0x0
-     */
+    /// @notice Register a new metric type.
+    /// @param id Unique metric id.
+    /// @param label Human-readable UI label.
+    /// @param roleName Writer role required to mint or update this metric.
+    /// @param commitment Whether the metric should use commitment-only semantics.
+    /// @param mask Allowed comparison operator bitmask.
+    /// @dev Emits `MetricRegistered` and rejects duplicate metric ids.
+    /// @custom:reverts MTC: metric exists if the id was already registered
+    /// @custom:reverts bad mask if unsupported compare bits are set
+    /// @custom:reverts MTC: empty label if the label is empty
+    /// @custom:reverts empty writer role if `roleName == 0x0`
     function registerMetric(
         bytes32 id,
         string  calldata label,
@@ -335,39 +294,34 @@ contract MultiTrustCredential is
         emit MetricRegistered(id, label, roleName, mask);
     }
 
-    /**
-    * @notice Freeze or unfreeze compare-mask updates for a metric.
-    * @param id     Metric id to toggle the freeze flag for.
-    * @param frozen If true, blocks `setCompareMask` for this metric; if false, allows updates again.
-    *
-    * @dev ADMIN-only control to prevent policy drift during sensitive periods (e.g., active proposals).
-    *      Emits `MaskFrozenSet`.
-    */
+    /// @notice Freeze or unfreeze compare-mask updates for a metric.
+    /// @param id Metric id to toggle the freeze flag for.
+    /// @param frozen Whether `setCompareMask` should be blocked for this metric.
+    /// @dev ADMIN_ROLE control used to stabilize policy during sensitive periods.
     function setMaskFrozen(bytes32 id, bool frozen) external onlyRole(ADMIN_ROLE) {
         _assertRegistered(id);
         maskFrozen[id] = frozen;
         emit MaskFrozenSet(id, frozen);
     }
 
+    /// @notice Allow or disallow a predicate type for a metric.
+    /// @param metricId Metric id.
+    /// @param predicateType Predicate identifier such as ALLOWLIST, RANGE, or DELTA.
+    /// @param allowed Whether the predicate should be accepted by `provePredicate`.
     function setPredicateAllowed(bytes32 metricId, bytes32 predicateType, bool allowed) external onlyRole(ADMIN_ROLE) {
         _assertRegistered(metricId);
         predicateAllowed[metricId][predicateType] = allowed;
         emit PredicateAllowedChanged(metricId, predicateType, allowed, _msgSender());
     }
 
-    /**
-     * @notice Update the allowed comparison mask for a metric.
-     * @param id   Metric id.
-     * @param mask New mask (0..8; bitwise OR of CompareMask flags).
-     *
-     * @dev Caller must hold the metric’s writer role; contract must not be paused.
-     *      Respects `maskFrozen`: when frozen, updates are blocked.
-     *
-     * @custom:reverts metric unregistered if id not registered
-     * @custom:reverts role              if caller lacks metric writer role
-     * @custom:reverts bad mask          if mask > (mask & ~_MASK_ALLOWED) == 0
-     * @custom:reverts mask frozen       if admin has frozen updates for this metric
-     */
+    /// @notice Update the allowed comparison mask for a metric.
+    /// @param id Metric id.
+    /// @param mask New comparison mask.
+    /// @dev The caller must hold the metric writer role and the metric must not be frozen.
+    /// @custom:reverts metric unregistered if the metric is not registered
+    /// @custom:reverts role if the caller lacks the metric writer role
+    /// @custom:reverts bad mask if unsupported compare bits are set
+    /// @custom:reverts mask frozen if admin has frozen updates for this metric
     function setCompareMask(bytes32 id, uint8 mask) external whenNotPaused {
         _assertRegistered(id);
         require(!maskFrozen[id], "mask frozen");
@@ -381,31 +335,22 @@ contract MultiTrustCredential is
         emit CompareMaskChanged(id, old, mask, _msgSender());
     }
 
-    /**
-     * @notice Internal: ensure metric id is registered.
-     * @param id Metric id.
-     * @custom:reverts metric unregistered if not registered
-     */
+    /// @notice Ensure that a metric id is registered before continuing.
+    /// @param id Metric id.
+    /// @custom:reverts metric unregistered if not registered
     function _assertRegistered(bytes32 id) internal view {
         require(metricRole[id] != bytes32(0), "metric unregistered");
     }
 
-    /*──────────────── Mint ─────────────────────*/
+    // Mint
 
-    /**
-     * @notice Mint a credential token for `to` (if absent) and set a metric.
-     * @param to    Recipient address. tokenId is derived as `uint256(uint160(to))`.
-     * @param data  MetricInput: {metricId, value, leafFull, uri, expiresAt}.
-     *
-     * @dev
-     * - Requires writer role for `data.metricId`.
-     * - If token not yet minted for `to`, mints and sets tokenURI to `data.uri`.
-     * - Stores metric and emits `MetricUpdated`.
-     *
-     * @custom:reverts metric unregistered if metric id not registered
-     * @custom:reverts role              if caller lacks writer role
-     * @custom:reverts already minted    if token already exists for `to`
-     */
+    /// @notice Mint a credential token for `to` and set an initial metric.
+    /// @param to Recipient address. `tokenId` is derived as `uint256(uint160(to))`.
+    /// @param data Metric input payload.
+    /// @dev The token must not already exist. Commitment metrics require `value == 0`.
+    /// @custom:reverts metric unregistered if the metric id is not registered
+    /// @custom:reverts role if the caller lacks the writer role
+    /// @custom:reverts already minted if the token already exists for `to`
     function mint(address to, MetricInput calldata data)
         external whenNotPaused nonReentrant
     {
@@ -425,17 +370,10 @@ contract MultiTrustCredential is
         emit MetricUpdated(tokenId, data.metricId, data.value, data.leafFull);
     }
 
-    /**
-     * @notice Batch mint and/or write metrics.
-     * @param arr Array of MintItem {to, metricId, value, leafFull, uri}.
-     *
-     * @dev
-     * - Length is limited to 200 per call for gas safety.
-     * - For each item: ensure registration & role, mint if absent (set URI), then write metric.
-     * - Emits `MetricUpdated` per write.
-     *
-     * @custom:reverts too many if `arr.length > 200`
-     */
+    /// @notice Batch mint and/or write metrics.
+    /// @param arr Array of mint items.
+    /// @dev Limited to 200 items per call for gas safety. Missing holder tokens are minted on demand.
+    /// @custom:reverts too many if `arr.length > 200`
     function mintBatch(MintItem[] calldata arr)
         external whenNotPaused nonReentrant
     {
@@ -464,19 +402,15 @@ contract MultiTrustCredential is
         }
     }
 
-    /*──────────────── Update ───────────────────*/
+    // Update
 
-    /**
-     * @notice Update a metric for an existing token.
-     * @param tokenId Credential token id (derived from owner address).
-     * @param upd     MetricUpdate {metricId, newValue, leafFull, expiresAt}.
-     *
-     * @dev Requires writer role and existing token. Emits `MetricUpdated`.
-     *
-     * @custom:reverts metric unregistered if id not registered
-     * @custom:reverts role              if caller lacks writer role
-     * @custom:reverts token absent      if token does not exist
-     */
+    /// @notice Update a metric for an existing token.
+    /// @param tokenId Credential token id derived from the holder address.
+    /// @param upd Metric update payload.
+    /// @dev Requires the metric writer role and an existing holder token.
+    /// @custom:reverts metric unregistered if the metric id is not registered
+    /// @custom:reverts role if the caller lacks the writer role
+    /// @custom:reverts token absent if the token does not exist
     function updateMetric(uint256 tokenId, MetricUpdate calldata upd)
         external whenNotPaused nonReentrant
     {
@@ -497,15 +431,10 @@ contract MultiTrustCredential is
         emit MetricUpdated(tokenId, upd.metricId, upd.newValue, upd.leafFull);
     }
 
-    /**
-     * @notice Batch update metrics.
-     * @param arr Array of UpdateItem {tokenId, metricId, newValue, leafFull}.
-     *
-     * @dev Length limited to 200 per call. Emits `MetricUpdated` per item.
-     *
-     * @custom:reverts too many     if `arr.length > 200`
-     * @custom:reverts metric unregistered / role / token absent — per item checks
-     */
+    /// @notice Batch update metrics.
+    /// @param arr Array of update items.
+    /// @dev Length is limited to 200 per call. Each item enforces registration, role, and token existence checks.
+    /// @custom:reverts too many if `arr.length > 200`
     function updateMetricBatch(UpdateItem[] calldata arr)
         external whenNotPaused nonReentrant
     {
@@ -530,18 +459,14 @@ contract MultiTrustCredential is
         }
     }
 
-    /**
-     * @notice Revoke a metric by zeroing both its `value` and `leafFull` commitment.
-     * @param tokenId  Credential token id (derived from holder address).
-     * @param metricId Metric id to revoke.
-     *
-     * @dev Requires the metric’s writer role. Emits `MetricRevoked` with pre-revocation values.
-     *
-     * @custom:reverts metric unregistered if the metric id has not been registered
-     * @custom:reverts role              if caller lacks the metric writer role
-     * @custom:reverts token absent      if the holder token does not exist
-     * @custom:reverts not issued        if neither value nor commitment had been set
-     */
+    /// @notice Revoke a metric by zeroing both its numeric value and anchor commitment.
+    /// @param tokenId Credential token id derived from the holder address.
+    /// @param metricId Metric id to revoke.
+    /// @dev Requires the metric writer role and emits `MetricRevoked` with the previous values.
+    /// @custom:reverts metric unregistered if the metric id has not been registered
+    /// @custom:reverts role if the caller lacks the metric writer role
+    /// @custom:reverts token absent if the holder token does not exist
+    /// @custom:reverts not issued if neither value nor commitment had been set
     function revokeMetric(uint256 tokenId, bytes32 metricId) external whenNotPaused {
         _assertRegistered(metricId);
         require(hasRole(metricRole[metricId], _msgSender()), "role");
@@ -562,41 +487,31 @@ contract MultiTrustCredential is
         emit MetricRevoked(tokenId, metricId, prevValue, prevLeaf);
     }
 
-    /*──────────────── ZK Verification ──────────*/
+    // ZK verification
 
+    /// @notice Update the Groth16 verifier used for base metric proofs.
+    /// @param _verifier New verifier contract address.
     function updateVerifier(address _verifier) external onlyRole(ADMIN_ROLE) whenNotPaused {
         verifier = IVerifier(_verifier);
         emit VerifierSet(_verifier);
     }
 
-    /**
-     * @notice Verify a zk proof for a given metric of a token.
-     * @param tokenId     Credential token id (derived from holder address).
-     * @param metricId    Metric type id.
-     * @param a,b,c       zk proof elements (Groth16-style).
-     * @param pubSignals  Public inputs expected by the circuit. This method expects:
-     *                   - pubSignals[0] = mode (relation bitmask: GT=1, LT=2, EQ=4; 0 means KYC-only)
-     *                   - pubSignals[1] = root (current Merkle root / anchor; must equal stored leafFull)
-     *                   - pubSignals[2] = nullifier
-     *                   - pubSignals[3] = addr (uint160) holder address for binding
-     *                   - pubSignals[4] = threshold
-     *                   - pubSignals[5] = leaf (commitment used inside the tree leaf construction)
-     *                      
-     * @return ok         True if verifier accepts the proof.
-     *
-     * @dev
-     * - Enforces address binding and commitment equality with stored metric.
-     * - Enforces that the chosen operator `op` is allowed by `compareMask[metricId]`.
-     * - Calls external verifier; reverts if verifier returns false.
-     *
-     * @custom:reverts anchor mism if pubSignals[1] != stored leafFull (anchor/root)
-     * @custom:reverts addr mism   if holder derived from pubSignals[3] is not the token owner
-     * @custom:reverts tokenId mism if tokenId != uint256(uint160(holder))
-     * @custom:reverts bad mode    if mode includes bits outside {GT,LT,EQ}
-     * @custom:reverts not KYC metric if mode==0 but compareMask != 0
-     * @custom:reverts op not allowed if (compareMask & mode) != mode
-     * @custom:reverts proof fail  if verifier returns false
-     */
+    /// @notice Verify a ZK proof for a given metric of a token.
+    /// @param tokenId Credential token id derived from the holder address.
+    /// @param metricId Metric type id.
+    /// @param a Groth16 proof element `a`.
+    /// @param b Groth16 proof element `b`.
+    /// @param c Groth16 proof element `c`.
+    /// @param pubSignals Public inputs for the metric circuit, including mode, anchor root, nullifier, bound holder address, threshold, and leaf.
+    /// @return ok True if the verifier accepts the proof.
+    /// @dev Enforces address binding, anchor equality, and compare-mask permissions before calling the external verifier.
+    /// @custom:reverts anchor mism if `pubSignals[1] != stored leafFull`
+    /// @custom:reverts addr mism if the bound holder address is not the token owner
+    /// @custom:reverts tokenId mism if `tokenId != uint256(uint160(holder))`
+    /// @custom:reverts bad mode if unsupported compare bits are set
+    /// @custom:reverts not KYC metric if `mode == 0` but `compareMask != 0`
+    /// @custom:reverts op not allowed if the metric compare mask does not include the requested mode
+    /// @custom:reverts proof fail if the verifier rejects the proof
     function proveMetric(
         uint256 tokenId,
         bytes32 metricId,
@@ -626,10 +541,22 @@ contract MultiTrustCredential is
         require(ok, "proof fail");
     }
 
+    /// @notice Return true when a predicate signal length is supported by the verifier adapters.
+    /// @param n Candidate public signal length.
     function _isSupportedSignalsLen(uint8 n) internal pure returns (bool) {
         return (n == 6 || n == 8 || n == 9 || n == 10);
     }
 
+    /// @notice Configure a predicate verification profile for a metric.
+    /// @param metricId Metric id.
+    /// @param predicateType Predicate identifier such as ALLOWLIST, RANGE, or DELTA.
+    /// @param predVerifier Verifier contract for this predicate profile.
+    /// @param signalsLen Expected number of public signals.
+    /// @param anchorIndex Index of the anchor/root signal.
+    /// @param addrIndex Index of the bound holder address signal.
+    /// @param epochIndex Index of the epoch signal when `epochCheck` is enabled.
+    /// @param epochCheck Whether predicate proofs must match the configured epoch.
+    /// @param requireMaskZero Whether the base metric compare mask must be zero.
     function setPredicateProfile(
         bytes32 metricId,
         bytes32 predicateType,
@@ -678,6 +605,10 @@ contract MultiTrustCredential is
         );
     }
 
+    /// @notice Update the epoch/version used by an epoch-checked predicate profile.
+    /// @param metricId Metric id.
+    /// @param predicateType Predicate identifier.
+    /// @param epoch New epoch value that proofs must carry.
     function setPredicateEpoch(bytes32 metricId, bytes32 predicateType, uint256 epoch) external onlyRole(ADMIN_ROLE) {
         _assertRegistered(metricId);
         PredicateProfile memory p = predicateProfile[metricId][predicateType];
@@ -687,17 +618,12 @@ contract MultiTrustCredential is
         emit PredicateEpochChanged(metricId, predicateType, epoch, _msgSender());
     }
 
-    /**
-     * @notice Verify a zk proof for a predicate (EIP-8036 ZKEx-style).
-     *
-     * Expected publicSignals layout for ALLOWLIST predicate:
-     *  - publicSignals[0] = issuerRoot (anchor; must equal stored leafFull)
-     *  - publicSignals[1] = allowRoot
-     *  - publicSignals[2] = nullifier
-     *  - publicSignals[3] = addr (uint160) holder address
-     *  - publicSignals[4] = statementHash (policy binding)
-     *  - publicSignals[5] = leaf (commitment)
-     */
+    /// @notice Verify a predicate proof using the configured ZKEx-style predicate profile.
+    /// @param tokenId Credential token id.
+    /// @param metricId Metric id.
+    /// @param predicateType Predicate identifier.
+    /// @param proof ABI-encoded Groth16 proof bytes.
+    /// @param publicSignals Public inputs for the predicate circuit.
     function provePredicate(
         uint256 tokenId,
         bytes32 metricId,
@@ -718,7 +644,7 @@ contract MultiTrustCredential is
         ok = _provePredicateCore(tokenId, metricId, predicateType, a, b, c, ps);
     }
 
-    // Backward-compatible wrapper. Prefer provePredicate() with PREDICATE_ALLOWLIST.
+    /// @notice Backward-compatible allowlist wrapper. Prefer `provePredicate(..., PREDICATE_ALLOWLIST, ...)`.
     function proveGroupMetric(
         uint256 tokenId,
         bytes32 metricId,
@@ -736,6 +662,11 @@ contract MultiTrustCredential is
         ok = _provePredicateCore(tokenId, metricId, PREDICATE_ALLOWLIST, a, b, c, ps);
     }
 
+    /// @notice Shared ZK binding checks used by both base metric proofs and predicate proofs.
+    /// @param tokenId Credential token id.
+    /// @param metricId Metric id.
+    /// @param holder Address recovered from the proof public signals.
+    /// @param anchor Anchor/root recovered from the proof public signals.
     function _checkZKContext(
         uint256 tokenId,
         bytes32 metricId,
@@ -753,6 +684,14 @@ contract MultiTrustCredential is
         }
     }
 
+    /// @notice Shared predicate proof verification core.
+    /// @param tokenId Credential token id.
+    /// @param metricId Metric id.
+    /// @param predicateType Predicate identifier.
+    /// @param a Groth16 proof element `a`.
+    /// @param b Groth16 proof element `b`.
+    /// @param c Groth16 proof element `c`.
+    /// @param publicSignals Predicate public inputs copied into memory.
     function _provePredicateCore(
         uint256 tokenId,
         bytes32 metricId,
@@ -785,6 +724,12 @@ contract MultiTrustCredential is
         require(ok, "proof fail");
     }
 
+    /// @notice Dispatch predicate verification to the verifier ABI that matches `publicSignals.length`.
+    /// @param predVerifier Verifier contract address.
+    /// @param a Groth16 proof element `a`.
+    /// @param b Groth16 proof element `b`.
+    /// @param c Groth16 proof element `c`.
+    /// @param publicSignals Predicate public inputs copied into memory.
     function _verifyPredicateProofMemory(
         address predVerifier,
         uint256[2] memory a,
@@ -820,17 +765,13 @@ contract MultiTrustCredential is
         revert("unsupported signalsLen");
     }
 
-    /**
-     * @notice Reduce (slash) a metric’s numeric value for an offender.
-     * @param offender Address whose token is targeted (tokenId = uint160(offender)).
-     * @param metricId Metric type to slash.
-     * @param penalty  Amount to subtract from current value (must be > 0).
-     *
-     * @dev Caller must hold SLASHER_ROLE. Updates timestamp and emits `Slash`.
-     *
-     * @custom:reverts 0            if penalty == 0
-     * @custom:reverts underflow    if current value < penalty
-     */
+    /// @notice Reduce a metric's numeric value for an offender.
+    /// @param offender Address whose token is targeted.
+    /// @param metricId Metric type to slash.
+    /// @param penalty Amount to subtract from the current value.
+    /// @dev Caller must hold SLASHER_ROLE. Updates the metric timestamp and emits `Slash`.
+    /// @custom:reverts 0 if `penalty == 0`
+    /// @custom:reverts underflow if the current value is smaller than `penalty`
     function slash(address offender, bytes32 metricId, uint32 penalty) external onlyRole(SLASHER_ROLE) {
         _assertRegistered(metricId);
         require(penalty > 0, '0');
@@ -871,11 +812,9 @@ contract MultiTrustCredential is
         return super._update(to, tokenId, auth);
     }
 
-    /**
-     * @notice ERC165 interface support (merge of parents).
-     * @param id Interface id.
-     * @return bool Whether supported.
-     */
+    /// @notice Return whether this contract supports an ERC165 interface id.
+    /// @param id Interface id.
+    /// @return bool Whether the interface is supported.
     function supportsInterface(bytes4 id)
         public view override(AccessControlEnumerableUpgradeable, ERC721URIStorageUpgradeable)
         returns (bool)
@@ -887,32 +826,22 @@ contract MultiTrustCredential is
             super.supportsInterface(id);
     }
 
-    /*──────────────── Pause / Upgrade ─────────*/
+    // Pause and upgrade
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     */
+    /// @notice Authorize a UUPS upgrade; only ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 }

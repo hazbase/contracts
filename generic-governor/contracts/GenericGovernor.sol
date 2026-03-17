@@ -56,7 +56,7 @@ contract GenericGovernor is
     ERC2771ContextUpgradeable,
     RolesCommonUpgradeable
 {
-    /*──────────────────── Errors ─────────────────────*/
+    // Errors
     error StrategyMissing();
     error IdMismatch();
     error InvalidTime();
@@ -65,7 +65,7 @@ contract GenericGovernor is
     error StrategyFailed();
     error Overflow();
 
-    /*──────────────────── Enums / Events ─────────────────────*/
+    // Enums and events
     /// @notice Emitted when a (default) strategy is changed.
     event StrategyRegistered(bytes4 indexed id, address indexed strat); // (declared for future use)
     event DefaultStrategySet(bytes4 indexed id, address indexed strat);
@@ -77,7 +77,7 @@ contract GenericGovernor is
     enum Origin { Standalone, Meta }
     mapping(uint256 => Origin) public proposalOrigin;
 
-    /*──────────────────── Storage ─────────────────────────────*/
+    // Storage
     /// @notice Default weight strategy if not otherwise overridden.
     IWeightStrategy public defaultStrategy;
 
@@ -100,25 +100,20 @@ contract GenericGovernor is
     /// @notice proposalId => Proposal details
     mapping(uint256 => Proposal) public proposals;
 
-    /*──────────────────── Constructor ─────────────────────────*/
+    // Constructor
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
-    /*──────────────────── Initializer ─────────────────────────*/
+    // Initialization
 
-    /**
-     * @notice Initialize the Governor instance.
-     * @param admin       Admin for RolesCommon / ERC2771 forwarder management.
-     * @param name_       Governor name.
-     * @param token_      IVotes-compatible governance token (e.g., ERC20Votes).
-     * @param timelock_   Timelock controller for queued execution.
-     * @param strategyAddr Address of initial `IWeightStrategy` implementation.
-     * @param forwarders  Trusted ERC-2771 forwarders.
-     *
-     * @dev
-     * - Default GovernorSettings: votingDelay=0, votingPeriod=365 days, proposalThreshold=0.
-     * - Reverts StrategyMissing if `strategyAddr` is zero.
-     */
+    /// @notice Initialize the Governor instance.
+    /// @param admin Admin for shared roles and forwarder management.
+    /// @param name_ Governor name.
+    /// @param token_ IVotes-compatible governance token.
+    /// @param timelock_ Timelock controller for queued execution.
+    /// @param strategyAddr Address of the initial `IWeightStrategy` implementation.
+    /// @param forwarders Trusted ERC-2771 forwarders.
+    /// @dev Uses GovernorSettings defaults of votingDelay=0, votingPeriod=365 days, and proposalThreshold=0.
     function initialize(
         address admin,
         string memory name_,
@@ -141,16 +136,12 @@ contract GenericGovernor is
         defaultStrategy = IWeightStrategy(strategyAddr);
     }
 
-    /*──────────────────── Strategy Registry ───────────────────*/
+    // Strategy registry
 
-    /**
-     * @notice Update the default weight strategy via governance.
-     * @param id       Strategy interface id; must equal `IWeightStrategy(newAddr).id()`.
-     * @param newAddr  New strategy contract address.
-     *
-     * @dev Reverts IdMismatch if id does not match the contract’s advertised id().
-     *      Emits `DefaultStrategySet(id, newAddr)`.
-     */
+    /// @notice Update the default weight strategy via governance.
+    /// @param id Strategy interface id, which must match `IWeightStrategy(newAddr).id()`.
+    /// @param newAddr New strategy contract address.
+    /// @dev Reverts `IdMismatch` when the advertised strategy id does not match the requested one.
     function updateStrategy(bytes4 id, address newAddr) public onlyGovernance {
         if (id != IWeightStrategy(newAddr).id()) revert IdMismatch();
         
@@ -158,12 +149,10 @@ contract GenericGovernor is
         emit DefaultStrategySet(id, newAddr);
     }
 
-    /*──────────────────── Proposal hook (optional strategy override) ─────*/
+    // Proposal entrypoints
 
-    /**
-     * @notice Disabled base `propose` (use extended version with timestamps).
-     * @dev Always reverts to force using the timestamped variant.
-     */
+    /// @notice Disabled base `propose`; use the timestamped overload instead.
+    /// @dev Always reverts to force callers onto the timestamped proposal flow.
     function propose(
         address[] memory /*targets*/,
         uint256[] memory /*values*/,
@@ -178,27 +167,19 @@ contract GenericGovernor is
         revert("Use extended propose with timestamps");
     }
     
-    /**
-     * @notice Create a proposal with explicit voting window.
-     * @param proposer     The address recorded as proposer (also used for threshold check).
-     * @param targets      Call targets.
-     * @param values       ETH values per target.
-     * @param calldatas    Encoded calldata per target.
-     * @param description  Proposal description.
-     * @param startTs      Voting start (unix). If 0, defaults to `block.timestamp`.
-     * @param endTs        Voting end (unix). Must be > start and ≤ start + 60 days.
-     * @return id          Newly created proposal id.
-     *
-     * @dev
-     * - Requires a non-zero `defaultStrategy` (NoStrategy).
-     * - If strategy `minThreshold()` > 0, verifies `getVotes(proposer, clock()-1)` meets threshold.
-     * - Persists `Proposal` mirror and `{start,end}` to `_timeWindows` for custom `state()` logic.
-     * - Emits standard Governor events internally.
-     *
-     * @custom:reverts InvalidTime   if endTs ≤ startTs or span > 60 days
-     * @custom:reverts NoStrategy    if defaultStrategy is not set
-     * @custom:reverts GovernorInsufficientProposerVotes if proposer lacks threshold
-     */
+    /// @notice Create a proposal with an explicit voting window.
+    /// @param proposer Address recorded as proposer and used for threshold checks.
+    /// @param targets Call targets.
+    /// @param values ETH values per target.
+    /// @param calldatas Encoded calldata per target.
+    /// @param description Proposal description.
+    /// @param startTs Voting start timestamp; `0` defaults to `block.timestamp`.
+    /// @param endTs Voting end timestamp; must be after `startTs` and within 60 days.
+    /// @return id Newly created proposal id.
+    /// @dev Persists a local proposal mirror and custom `{start,end}` window used by `state()`.
+    /// @custom:reverts InvalidTime if `endTs <= startTs` or the span exceeds 60 days
+    /// @custom:reverts NoStrategy if `defaultStrategy` is not configured
+    /// @custom:reverts GovernorInsufficientProposerVotes if the proposer lacks the strategy threshold
     function propose(
         address proposer,
         address[] memory targets,
@@ -240,21 +221,18 @@ contract GenericGovernor is
         });
     }
 
-    /**
-     * @notice Create a “child” proposal (meta-governance) with a shared expected id.
-     * @param sharedId    Expected id to be returned by `propose(...)`.
-     * @param proposer    Recorded proposer (threshold checked).
-     * @param targets     Call targets.
-     * @param values      ETH values.
-     * @param calldatas   Encoded calldata.
-     * @param description Human-readable description.
-     * @param startTs     Voting start (0 ⇒ now).
-     * @param endTs       Voting end.
-     * @return uint256    The proposal id (must equal `sharedId` or revert).
-     *
-     * @dev Sets `proposalOrigin[id] = Origin.Meta`. Only callable by `META_ROLE`.
-     * @custom:reverts SharedIdMismatch if returned id != sharedId
-     */
+    /// @notice Create a child proposal for meta-governance with a shared expected id.
+    /// @param sharedId Expected proposal id.
+    /// @param proposer Recorded proposer used for threshold checks.
+    /// @param targets Call targets.
+    /// @param values ETH values.
+    /// @param calldatas Encoded calldata.
+    /// @param description Human-readable description.
+    /// @param startTs Voting start timestamp.
+    /// @param endTs Voting end timestamp.
+    /// @return uint256 The created proposal id, which must equal `sharedId`.
+    /// @dev Only META_ROLE may call. Child proposals are marked with `proposalOrigin[id] = Origin.Meta`.
+    /// @custom:reverts SharedIdMismatch if the created proposal id differs from `sharedId`
     function proposeChild(
         uint256 sharedId,
         address proposer,
@@ -271,13 +249,11 @@ contract GenericGovernor is
         return id;
     }
 
-    /**
-     * @notice Return for/against tallies and total supply at snapshot.
-     * @param id Proposal id.
-     * @return yesVotes For votes.
-     * @return noVotes  Against votes.
-     * @return supply   Total voting supply at snapshot block.
-     */
+    /// @notice Return for/against tallies and total supply at the proposal snapshot.
+    /// @param id Proposal id.
+    /// @return yesVotes For votes.
+    /// @return noVotes Against votes.
+    /// @return supply Total voting supply at the snapshot block.
     function tally(uint256 id)
         external
         view
@@ -287,17 +263,15 @@ contract GenericGovernor is
         return (forVotes, againstVotes, token().getPastTotalSupply(proposalSnapshot(id)));
     }
 
-    /**
-     * @notice Read back the extended proposal details.
-     * @param id Proposal id.
-     * @return proposer    Address of proposer.
-     * @return targets     Targets array.
-     * @return values      Values array.
-     * @return calldatas   Calldata array.
-     * @return start       Voting start timestamp.
-     * @return end         Voting end timestamp.
-     * @return description Human-readable description.
-     */
+    /// @notice Read back the extended proposal details stored by this contract.
+    /// @param id Proposal id.
+    /// @return proposer Address of the proposer.
+    /// @return targets Targets array.
+    /// @return values Values array.
+    /// @return calldatas Calldata array.
+    /// @return start Voting start timestamp.
+    /// @return end Voting end timestamp.
+    /// @return description Human-readable description.
     function getProposalDetails(uint256 id)
         external view
         returns (
@@ -314,20 +288,13 @@ contract GenericGovernor is
         return (p.proposer, p.targets, p.values, p.calldatas, p.start, p.end, p.description);
     }
 
-    /*──────────────────── Weight override ─────────────────────*/
+    // Weight override
 
-    /**
-     * @notice Delegate weight calculation to `defaultStrategy.weight`.
-     * @param voter        Address casting a vote.
-     * @param blockNumber  Snapshot block.
-     * @param              (unused) raw params.
-     * @return uint256     Strategy-defined voting weight (bounded).
-     *
-     * @dev
-     * - Performs `staticcall` to the strategy with `(voter, blockNumber, token(), "")`.
-     * - Reverts `StrategyFailed()` on call failure; decodes `uint256` on success.
-     * - Reverts `Overflow()` if weight > 1e36 to cap pathological strategies.
-     */
+    /// @notice Delegate weight calculation to `defaultStrategy.weight`.
+    /// @param voter Address casting a vote.
+    /// @param blockNumber Snapshot block.
+    /// @return uint256 Strategy-defined voting weight.
+    /// @dev Uses `staticcall` and bounds the result to avoid pathological strategies.
     function _getVotes(
         address voter,
         uint256 blockNumber,
@@ -343,11 +310,9 @@ contract GenericGovernor is
         return w;
     }
 
-    /**
-     * @notice Compute quorum using the strategy’s quorum function.
-     * @param blockNumber Snapshot block.
-     * @return uint256    Quorum amount required.
-     */
+    /// @notice Compute quorum using the strategy's quorum function.
+    /// @param blockNumber Snapshot block.
+    /// @return uint256 Required quorum amount.
     function quorum(uint256 blockNumber) public view
         override(GovernorUpgradeable)
         returns (uint256)
@@ -356,9 +321,7 @@ contract GenericGovernor is
         return defaultStrategy.quorum(supply, blockNumber);
     }
 
-    /**
-     * @notice Start time accessor for proposal id.
-     */
+    /// @notice Return the configured start timestamp for a proposal.
     function getStartTime(uint256 id)
         public view
         returns (uint256)
@@ -366,9 +329,7 @@ contract GenericGovernor is
         return _timeWindows[id].start;
     }
 
-    /**
-     * @notice End time accessor for proposal id.
-     */
+    /// @notice Return the configured end timestamp for a proposal.
     function getEndTime(uint256 id)
         public view
         returns (uint256)
@@ -376,16 +337,10 @@ contract GenericGovernor is
         return _timeWindows[id].end;
     }
 
-    /**
-     * @notice State machine override to honor explicit {start,end} voting windows.
-     * @param id Proposal id.
-     * @return ProposalState Governor state value.
-     *
-     * @dev
-     * - Before start: Pending
-     * - Between start and end: Active
-     * - After end: Succeeded/Defeated based on quorum & vote success; Queued if ETA set.
-     */
+    /// @notice Override the Governor state machine to honor explicit `{start,end}` voting windows.
+    /// @param id Proposal id.
+    /// @return ProposalState Governor state value.
+    /// @dev Before `start` the proposal is Pending, between `{start,end}` it is Active, and after `end` it resolves using quorum/vote results.
     function state(uint256 id)
         public view override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
         returns (ProposalState)
@@ -410,18 +365,14 @@ contract GenericGovernor is
         }
     }
 
-    /**
-     * @notice Proposal threshold passthrough (from GovernorSettings).
-     */
+    /// @notice Return the proposal threshold from GovernorSettings.
     function proposalThreshold()
         public view
         override(GovernorUpgradeable, GovernorSettingsUpgradeable)
         returns (uint256)
     { return super.proposalThreshold(); }
 
-    /**
-     * @notice Whether a proposal needs queuing (timelock).
-     */
+    /// @notice Return whether a proposal needs queuing in the timelock.
     function proposalNeedsQueuing(uint256 proposalId)
         public
         view
@@ -431,9 +382,7 @@ contract GenericGovernor is
         return super.proposalNeedsQueuing(proposalId);
     }
 
-    /**
-     * @dev Queue operations into the timelock (internal Governor plumbing).
-     */
+    /// @dev Queue operations into the timelock.
     function _queueOperations(
         uint256 proposalId,
         address[] memory targets,
@@ -448,9 +397,7 @@ contract GenericGovernor is
         return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash);
     }
 
-    /**
-     * @dev Execute operations from the timelock (internal Governor plumbing).
-     */
+    /// @dev Execute operations from the timelock.
     function _executeOperations(
         uint256 proposalId,
         address[] memory targets,
@@ -464,9 +411,7 @@ contract GenericGovernor is
         super._executeOperations(proposalId, targets, values, calldatas, descriptionHash);
     }
 
-    /**
-     * @dev Cancel proposal plumbing passthrough.
-     */
+    /// @dev Cancel proposal plumbing passthrough.
     function _cancel(
         address[] memory targets,
         uint256[] memory values,
@@ -478,46 +423,33 @@ contract GenericGovernor is
         returns (uint256)
     { return super._cancel(targets, values, calldatas, descriptionHash); }
 
-    /**
-     * @dev Executor address resolution (timelock-aware).
-     */
+    /// @dev Resolve the timelock-aware executor address.
     function _executor()
         internal view
         override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
         returns (address)
     { return super._executor(); }
 
-    /**
-     * @notice Add or remove a trusted ERC-2771 forwarder.
-     * @param forwarder Forwarder address.
-     * @param trust     True to trust, false to revoke.
-     *
-     * @dev Only ADMIN_ROLE may call.
-     */
+    /// @notice Add or remove a trusted ERC-2771 forwarder.
+    /// @param forwarder Forwarder address.
+    /// @param trust True to trust, false to revoke.
+    /// @dev Only ADMIN_ROLE may call.
     function updateForwarder(address forwarder, bool trust) external onlyRole(ADMIN_ROLE) {
         ERC2771ContextUpgradeable.updateTrustedForwarder(forwarder, trust);
     }
 
-    /*──────────────────── Misc boilerplate ─────────────────────*/
+    // Miscellaneous boilerplate
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData()   internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice Authorize UUPS upgrade; only Governance (via Governor).
-     */
+    /// @notice Authorize a UUPS upgrade; only Governance may do so.
     function _authorizeUpgrade(address) internal override onlyGovernance {}
 
-    /**
-     * @notice ERC165 support aggregation across parents.
-     */
+    /// @notice Aggregate ERC165 support across Governor and AccessControl parents.
     function supportsInterface(bytes4 iid) public view override(GovernorUpgradeable, AccessControlEnumerableUpgradeable) returns(bool){return super.supportsInterface(iid);}    
 
     /// @dev Storage gap for future variable additions.

@@ -73,9 +73,7 @@ enum IProposalState {
     Executed
 }
 
-/**
- * @dev Interface a child governor must expose so the meta layer can orchestrate it.
- */
+// Interface a child governor must expose so the meta layer can orchestrate it.
 interface IGovernorBasic {
     function META_ROLE() external view returns(bytes32);
     function DEFAULT_ADMIN_ROLE() external view returns(bytes32);
@@ -83,18 +81,16 @@ interface IGovernorBasic {
     function grantRole(bytes32 role, address account) external;
     function getVotes(address account, uint256 timepoint) external view returns (uint256);
 
-    /**
-     * @notice Child-side creation of a proposal with a shared id (provided by meta).
-     * @param sharedId     Expected proposal id (must match child-side computed id).
-     * @param proposer     Proposer address recorded in child.
-     * @param targets      Call targets.
-     * @param values       ETH values.
-     * @param calldatas    Encoded calldata.
-     * @param description  Human-readable description.
-     * @param startTs      Voting start (unix).
-     * @param endTs        Voting end (unix).
-     * @return uint256     The child proposal id (should equal `sharedId`).
-     */
+    /// @notice Child-side creation of a proposal with a shared id (provided by meta).
+    /// @param sharedId     Expected proposal id (must match child-side computed id).
+    /// @param proposer     Proposer address recorded in child.
+    /// @param targets      Call targets.
+    /// @param values       ETH values.
+    /// @param calldatas    Encoded calldata.
+    /// @param description  Human-readable description.
+    /// @param startTs      Voting start (unix).
+    /// @param endTs        Voting end (unix).
+    /// @return uint256     The child proposal id (should equal `sharedId`).
     function proposeChild(
         uint256 sharedId,
         address proposer,
@@ -125,13 +121,7 @@ interface IGovernorBasic {
         );
 }
 
-/**
- * @title  MetaGovernor
- * @notice Reputation / stake hybrid meta-governor. It composes results from two child
- *         governors (economic & social) and schedules execution when combined rules pass.
- *
- *         Voting mechanics LIVE in the child governors; this contract coordinates them.
- */
+// Runtime contract that coordinates the two child governors described in the file header above.
 contract MetaGovernor is
     GovernorVotesQuorumFractionUpgradeable,
     GovernorCountingSimpleUpgradeable,
@@ -141,7 +131,7 @@ contract MetaGovernor is
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable
 {
-    /*────────────────────────── Types & Events ───────────────────────────*/
+    // Types & Events
 
     /// @notice Proposal classification to select combination/quorum/super rules.
     enum ProposalType { Economic, Social, Mixed, Emergency }
@@ -149,23 +139,17 @@ contract MetaGovernor is
     /// @notice Emitted after a successful `finalize`, with combined YES/NO.
     event Finalized(uint256 id, uint256 yes, uint256 no, address sender);
 
-    /**
-     * @dev Linear weights (in basis points) applied to each child tally:
-     *      combined_yes = (yes_econ * eco + yes_soc * soc) / 10_000 (same for NO)
-     */
+    /// @dev Linear weights (in basis points) applied to each child tally:
+    ///      combined_yes = (yes_econ * eco + yes_soc * soc) / 10_000 (same for NO)
     struct Factors { uint16 eco; uint16 soc; }
 
-    /**
-     * @dev Per-child turnout quorum in basis points vs each child’s total supply:
-     *      (yes + no) * 10_000 >= supply * quorumBp
-     */
+    /// @dev Per-child turnout quorum in basis points vs each child’s total supply:
+    ///      (yes + no) * 10_000 >= supply * quorumBp
     struct QuorumRule { uint16 eco; uint16 soc; }
 
-    /**
-     * @dev Super-majority + combined turnout thresholds:
-     *      - yesBp: YES/(YES+NO) in bp (combined)
-     *      - turnoutBp: (YES+NO) in bp vs (supply_econ + supply_soc)
-     */
+    /// @dev Super-majority + combined turnout thresholds:
+    ///      - yesBp: YES/(YES+NO) in bp (combined)
+    ///      - turnoutBp: (YES+NO) in bp vs (supply_econ + supply_soc)
     struct SuperRule { uint16 yesBp; uint16 turnoutBp; }
 
     /// @notice Per-type linear combination factors.
@@ -185,22 +169,20 @@ contract MetaGovernor is
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
-    /*────────────────────────── Initializer ───────────────────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize meta governor.
-     * @param admin       DEFAULT_ADMIN_ROLE holder for meta (and typically child admin too).
-     * @param name_       Governor name.
-     * @param econAddr    Address of economic child governor (must implement IGovernorBasic).
-     * @param socAddr     Address of social child governor (must implement IGovernorBasic).
-     * @param timelock    Timelock controller for scheduling.
-     * @param forwarders  Trusted ERC-2771 forwarders.
-     *
-     * @dev
-     * - Grants DEFAULT_ADMIN_ROLE to `admin`.
-     * - Optionally (commented) sanity-checks granting META_ROLE on children.
-     * - Seeds default combination/quorum/super rules.
-     */
+    /// @notice Initialize meta governor.
+    /// @param admin       DEFAULT_ADMIN_ROLE holder for meta (and typically child admin too).
+    /// @param name_       Governor name.
+    /// @param econAddr    Address of economic child governor (must implement IGovernorBasic).
+    /// @param socAddr     Address of social child governor (must implement IGovernorBasic).
+    /// @param timelock    Timelock controller for scheduling.
+    /// @param forwarders  Trusted ERC-2771 forwarders.
+    ///
+    /// @dev
+    /// - Grants DEFAULT_ADMIN_ROLE to `admin`.
+    /// - Optionally (commented) sanity-checks granting META_ROLE on children.
+    /// - Seeds default combination/quorum/super rules.
     function initialize(
         address admin,
         string memory name_,
@@ -234,7 +216,7 @@ contract MetaGovernor is
         }
         */
 
-        /* Default rules (basis points) */
+        // Default rules (basis points)
         baseFactors[ProposalType.Economic]  = Factors(10000, 8000);   // econ=100%, soc=80%
         baseFactors[ProposalType.Social]    = Factors(8000, 10000);   // econ=80%,  soc=100%
         baseFactors[ProposalType.Mixed]     = Factors(9000, 9000);
@@ -251,12 +233,10 @@ contract MetaGovernor is
         superRules[ProposalType.Emergency] = SuperRule(7500, 6000);
     }
 
-    /*────────────────────────── Proposing ───────────────────────────────*/
+    // Proposing
 
-    /**
-     * @notice Disable the base OZ `propose` entry; meta requires typed propose below.
-     * @dev Always reverts to force using the ProposalType version.
-     */
+    /// @notice Disable the base OZ `propose` entry; meta requires typed propose below.
+    /// @dev Always reverts to force using the ProposalType version.
     function propose(
         address[] memory /*targets*/,
         uint256[] memory /*values*/,
@@ -271,22 +251,20 @@ contract MetaGovernor is
         revert("Use propose with ProposalType");
     }
 
-    /**
-     * @notice Create a proposal in BOTH child governors with the same shared id.
-     * @param p         Proposal type to choose combination/quorum/super rules.
-     * @param targets   Call targets.
-     * @param values    ETH values.
-     * @param calldatas Encoded calldata.
-     * @param desc      Human-readable description.
-     * @param startTs   Voting start timestamp (unix).
-     * @param endTs     Voting end timestamp (unix).
-     * @return id       Shared proposal id (hash of {targets, values, calldatas, descHash}).
-     *
-     * @dev
-     * - Validates period and array length match.
-     * - Writes `_ptype[id] = p`.
-     * - Calls `proposeChild` on both children; they should enforce id match internally.
-     */
+    /// @notice Create a proposal in BOTH child governors with the same shared id.
+    /// @param p         Proposal type to choose combination/quorum/super rules.
+    /// @param targets   Call targets.
+    /// @param values    ETH values.
+    /// @param calldatas Encoded calldata.
+    /// @param desc      Human-readable description.
+    /// @param startTs   Voting start timestamp (unix).
+    /// @param endTs     Voting end timestamp (unix).
+    /// @return id       Shared proposal id (hash of {targets, values, calldatas, descHash}).
+    ///
+    /// @dev
+    /// - Validates period and array length match.
+    /// - Writes `_ptype[id] = p`.
+    /// - Calls `proposeChild` on both children; they should enforce id match internally.
     function propose(
         ProposalType p,
         address[] memory targets,
@@ -305,46 +283,40 @@ contract MetaGovernor is
         soc.proposeChild(id, _msgSender(), targets, values, calldatas, desc, startTs, endTs);
     }
 
-    /**
-     * @notice Convenience passthrough for reading child votes.
-     * @param account   Address to query.
-     * @param timepoint Snapshot timepoint/block as defined by child.
-     * @return votes    Child-reported voting power.
-     */
+    /// @notice Convenience passthrough for reading child votes.
+    /// @param account   Address to query.
+    /// @param timepoint Snapshot timepoint/block as defined by child.
+    /// @return votes    Child-reported voting power.
     function getEconVotes(address account, uint256 timepoint) external view returns (uint256 votes) {
         votes = econ.getVotes(account, timepoint);
     }
 
-    /**
-     * @notice Convenience passthrough for reading child votes.
-     * @param account   Address to query.
-     * @param timepoint Snapshot timepoint/block as defined by child.
-     * @return votes    Child-reported voting power.
-     */
+    /// @notice Convenience passthrough for reading child votes.
+    /// @param account   Address to query.
+    /// @param timepoint Snapshot timepoint/block as defined by child.
+    /// @return votes    Child-reported voting power.
     function getSocVotes(address account, uint256 timepoint) external view returns (uint256 votes) {
         votes = soc.getVotes(account, timepoint);
     }
 
-    /*────────────────────────── Finalization ─────────────────────────────*/
+    // Finalization
 
-    /**
-     * @notice Finalize a proposal after BOTH children `Succeeded` and combined rules pass.
-     * @param id Shared proposal id.
-     *
-     * @dev
-     * - Requires econ.state(id) == Succeeded and soc.state(id) == Succeeded.
-     * - Enforces per-type child turnout (`quorums`) vs each child supply.
-     * - Combines YES/NO by `baseFactors[p]`.
-     * - Enforces meta-level YES ratio (`superRules[p].yesBp`) and combined turnout
-     *   vs (supply_e + supply_s) (`superRules[p].turnoutBp`).
-     * - On success, schedules the batch via timelock with `getMinDelay()`.
-     * - Emits `Finalized`.
-     *
-     * @custom:reverts econ not passed / soc not passed   if either child not Succeeded
-     * @custom:reverts Eco quorum / Soc quorum            if child turnout too low
-     * @custom:reverts no votes                           if YES+NO == 0 after combine
-     * @custom:reverts yes threshold / turnout            if super rules not met
-     */
+    /// @notice Finalize a proposal after BOTH children `Succeeded` and combined rules pass.
+    /// @param id Shared proposal id.
+    ///
+    /// @dev
+    /// - Requires econ.state(id) == Succeeded and soc.state(id) == Succeeded.
+    /// - Enforces per-type child turnout (`quorums`) vs each child supply.
+    /// - Combines YES/NO by `baseFactors[p]`.
+    /// - Enforces meta-level YES ratio (`superRules[p].yesBp`) and combined turnout
+    ///   vs (supply_e + supply_s) (`superRules[p].turnoutBp`).
+    /// - On success, schedules the batch via timelock with `getMinDelay()`.
+    /// - Emits `Finalized`.
+    ///
+    /// @custom:reverts econ not passed / soc not passed   if either child not Succeeded
+    /// @custom:reverts Eco quorum / Soc quorum            if child turnout too low
+    /// @custom:reverts no votes                           if YES+NO == 0 after combine
+    /// @custom:reverts yes threshold / turnout            if super rules not met
     function finalize(uint256 id) external nonReentrant {
         require(econ.state(id) == IProposalState.Succeeded, "econ not passed");
         require(soc.state(id)  == IProposalState.Succeeded, "soc not passed");
@@ -388,40 +360,32 @@ contract MetaGovernor is
         emit Finalized(id, yes, no, _msgSender());
     }
 
-    /*───────────────── Multiple-inheritance forwarders ───────────────────*/
+    // Multiple-inheritance forwarders
 
-    /**
-     * @notice Voting delay (unused by meta; child windows control timing).
-     * @return uint256 Minimal placeholder.
-     */
+    /// @notice Voting delay (unused by meta; child windows control timing).
+    /// @return uint256 Minimal placeholder.
     function votingDelay()
         public pure
         override(GovernorUpgradeable)
         returns (uint256)
     { return 1; }
 
-    /**
-     * @notice Voting period (unused by meta; child windows control timing).
-     * @return uint256 Minimal placeholder.
-     */
+    /// @notice Voting period (unused by meta; child windows control timing).
+    /// @return uint256 Minimal placeholder.
     function votingPeriod()
         public pure
         override(GovernorUpgradeable)
         returns (uint256)
     { return 1; }
 
-    /**
-     * @notice Proposal threshold passthrough.
-     */
+    /// @notice Proposal threshold passthrough.
     function proposalThreshold()
         public view
         override(GovernorUpgradeable)
         returns (uint256)
     { return super.proposalThreshold(); }
 
-    /**
-     * @notice State passthrough to OZ Governor logic (meta does not override).
-     */
+    /// @notice State passthrough to OZ Governor logic (meta does not override).
     function state(uint256 id)
         public view override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
         returns (ProposalState)
@@ -429,18 +393,14 @@ contract MetaGovernor is
         return super.state(id);
     }
 
-    /**
-     * @notice Whether proposals require queuing (timelock).
-     */
+    /// @notice Whether proposals require queuing (timelock).
     function proposalNeedsQueuing(uint256 proposalId)
         public view
         override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
         returns (bool)
     { return super.proposalNeedsQueuing(proposalId); }
 
-    /**
-     * @dev Queue operations into timelock (internal Governor plumbing).
-     */
+    /// @dev Queue operations into timelock (internal Governor plumbing).
     function _queueOperations(
         uint256 proposalId,
         address[] memory targets,
@@ -453,9 +413,7 @@ contract MetaGovernor is
         returns (uint48)
     { return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash); }
 
-    /**
-     * @dev Execute operations from the timelock (internal Governor plumbing).
-     */
+    /// @dev Execute operations from the timelock (internal Governor plumbing).
     function _executeOperations(
         uint256 proposalId,
         address[] memory targets,
@@ -467,9 +425,7 @@ contract MetaGovernor is
         override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
     { super._executeOperations(proposalId, targets, values, calldatas, descriptionHash); }
 
-    /**
-     * @dev Cancel proposal plumbing passthrough.
-     */
+    /// @dev Cancel proposal plumbing passthrough.
     function _cancel(
         address[] memory targets,
         uint256[] memory values,
@@ -481,27 +437,21 @@ contract MetaGovernor is
         returns (uint256)
     { return super._cancel(targets, values, calldatas, descriptionHash); }
 
-    /**
-     * @dev Timelock executor address resolution.
-     */
+    /// @dev Timelock executor address resolution.
     function _executor()
         internal view
         override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
         returns (address)
     { return super._executor(); }
 
-    /**
-     * @notice Add/remove trusted ERC-2771 forwarders (admin only).
-     * @param forwarder Forwarder address.
-     * @param trust     True to trust, false to revoke.
-     */
+    /// @notice Add/remove trusted ERC-2771 forwarders (admin only).
+    /// @param forwarder Forwarder address.
+    /// @param trust     True to trust, false to revoke.
     function updateForwarder(address forwarder, bool trust) external onlyRole(DEFAULT_ADMIN_ROLE) {
         ERC2771ContextUpgradeable.updateTrustedForwarder(forwarder, trust);
     }
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender()
         internal
         view
@@ -509,9 +459,7 @@ contract MetaGovernor is
         returns (address)
     { return ERC2771ContextUpgradeable._msgSender(); }
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData()
         internal
         view
@@ -519,26 +467,20 @@ contract MetaGovernor is
         returns (bytes calldata)
     { return ERC2771ContextUpgradeable._msgData(); }
 
-    /*────────────────────────── UUPS gate ───────────────────────────────*/
+    // UUPS gate
 
-    /**
-     * @notice Authorize UUPS upgrade; only Governance (via Governor).
-     */
+    /// @notice Authorize UUPS upgrade; only Governance (via Governor).
     function _authorizeUpgrade(address newImpl)
         internal
         override
         onlyGovernance
     {}
 
-    /**
-     * @notice ERC165 support aggregation across parents.
-     */
+    /// @notice ERC165 support aggregation across parents.
     function supportsInterface(bytes4 iid) public view override(AccessControlUpgradeable, GovernorUpgradeable) returns (bool){
         return super.supportsInterface(iid);
     }
 
-    /**
-     * @dev Reserved storage to allow future variable additions (per OZ guidelines).
-     */
+    /// @dev Reserved storage to allow future variable additions (per OZ guidelines).
     uint256[48] private __gap;
 }

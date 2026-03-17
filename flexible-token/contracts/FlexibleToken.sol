@@ -58,7 +58,7 @@ contract FlexibleToken is
 {
     using ECDSA for bytes32;
 
-    /*────────────────────── Events ─────────────────────────────*/
+    // Events
 
     /// @notice Emitted when cap is changed by admin.
     event CapChanged(uint256 oldCap, uint256 newCap);
@@ -67,7 +67,7 @@ contract FlexibleToken is
     /// @notice Emitted on successful voucher redemption.
     event VoucherRedeemed(bytes32 digest, address to, uint256 amount);
 
-    /*──────────────────────── Config ───────────────────────────*/
+    // Config
 
     /// @notice If false, the token behaves as soul-bound (non-transferable).
     bool    public transferable;          // false = soul-bound token
@@ -79,13 +79,11 @@ contract FlexibleToken is
     /// @notice Optional whitelist registry (may be unset = address(0)).
     IWhitelist public whitelist;
 
-    /**
-     * @dev EIP-712 voucher struct for off-chain authorized mints.
-     * - `issuer` must sign and must hold MINTER_ROLE at redemption time.
-     * - `to==address(0)` means recipient is `_msgSender()`.
-     * - `validUntil` is a unix timestamp; redemption must happen before or at it.
-     * - `nonce` is included in the digest; replay is prevented by `redeemed[digest]`.
-     */
+    /// @dev EIP-712 voucher struct for off-chain authorized mints.
+    /// - `issuer` must sign and must hold MINTER_ROLE at redemption time.
+    /// - `to==address(0)` means recipient is `_msgSender()`.
+    /// - `validUntil` is a unix timestamp; redemption must happen before or at it.
+    /// - `nonce` is included in the digest; replay is prevented by `redeemed[digest]`.
     struct MintVoucher {
         address issuer;
         address to;        // 0x0 ⇒ _msgSender()
@@ -101,38 +99,34 @@ contract FlexibleToken is
     /// @notice EIP-712 digest replay protection.
     mapping(bytes32 => bool) public redeemed;
 
-    /*──────────────────── Constructor ─────────────────────────*/
+    // Constructor
 
-    /**
-     * @notice Disable initializers for the logic contract (UUPS pattern).
-     */
+    /// @notice Disable initializers for the logic contract (UUPS pattern).
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
-    /*──────────────────── Initializer ─────────────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize the token (proxy).
-     * @param name_          Token name.
-     * @param symbol_        Token symbol.
-     * @param treasury       Receiver of the initial supply & MINTER_ROLE.
-     * @param initialSupply  Amount minted to treasury.
-     * @param cap_           Total supply cap (0 ⇒ unlimited).
-     * @param decimals_      ERC-20 decimals (e.g., 18 or 0).
-     * @param transferable_  true = transferable; false = soul-bound.
-     * @param admin          DEFAULT_ADMIN_ROLE & UPGRADER_ROLE holder (timelock recommended).
-     * @param forwarders     ERC-2771 trusted forwarders.
-     *
-     * @dev
-     * - Sets roles (ADMIN, MINTER to `admin` & `treasury`).
-     * - Mints `initialSupply` to `treasury` (cap-checked).
-     * - Initializes ERC20Votes and Pausable, UUPS, ReentrancyGuard, ERC2771, and RolesCommon.
-     *
-     * @custom:reverts treasury zero if treasury == address(0)
-     * @custom:reverts admin zero    if admin == address(0)
-     * @custom:reverts cap too low   if cap_ > 0 and cap_ < initialSupply
-     * @custom:reverts invalid decimals if decimals_ > 18
-     */
+    /// @notice Initialize the token (proxy).
+    /// @param name_          Token name.
+    /// @param symbol_        Token symbol.
+    /// @param treasury       Receiver of the initial supply & MINTER_ROLE.
+    /// @param initialSupply  Amount minted to treasury.
+    /// @param cap_           Total supply cap (0 ⇒ unlimited).
+    /// @param decimals_      ERC-20 decimals (e.g., 18 or 0).
+    /// @param transferable_  true = transferable; false = soul-bound.
+    /// @param admin          DEFAULT_ADMIN_ROLE & UPGRADER_ROLE holder (timelock recommended).
+    /// @param forwarders     ERC-2771 trusted forwarders.
+    ///
+    /// @dev
+    /// - Sets roles (ADMIN, MINTER to `admin` & `treasury`).
+    /// - Mints `initialSupply` to `treasury` (cap-checked).
+    /// - Initializes ERC20Votes and Pausable, UUPS, ReentrancyGuard, ERC2771, and RolesCommon.
+    ///
+    /// @custom:reverts treasury zero if treasury == address(0)
+    /// @custom:reverts admin zero    if admin == address(0)
+    /// @custom:reverts cap too low   if cap_ > 0 and cap_ < initialSupply
+    /// @custom:reverts invalid decimals if decimals_ > 18
     function initialize(
         string memory  name_,
         string memory  symbol_,
@@ -167,39 +161,33 @@ contract FlexibleToken is
         if (initialSupply > 0) _mint(treasury, initialSupply);
     }
 
-    /*──────────────────── Overrides ───────────────────────────*/
+    // Overrides
 
-    /**
-     * @notice Report ERC-20 decimals.
-     * @return uint8 The configured decimals value.
-     */
+    /// @notice Report ERC-20 decimals.
+    /// @return uint8 The configured decimals value.
     function decimals() public view override returns (uint8) { return _decimals; }
 
-    /*──────────────────── Mint / Burn ─────────────────────────*/
+    // Mint / Burn
 
-    /**
-     * @notice Mint tokens to `to` (MINTER_ROLE).
-     * @param to     Recipient address.
-     * @param amount Amount to mint.
-     *
-     * @dev Checks cap if non-zero. Pausable-protected.
-     * @custom:reverts cap exceeded if totalSupply() + amount > cap
-     */
+    /// @notice Mint tokens to `to` (MINTER_ROLE).
+    /// @param to     Recipient address.
+    /// @param amount Amount to mint.
+    ///
+    /// @dev Checks cap if non-zero. Pausable-protected.
+    /// @custom:reverts cap exceeded if totalSupply() + amount > cap
     function mint(address to, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
         if (_cap > 0) require(totalSupply() + amount <= _cap, "cap exceeded");
         _mint(to, amount);
     }
 
-    /**
-     * @notice Batch mint to multiple recipients (MINTER_ROLE).
-     * @param to       Recipients array.
-     * @param amounts  Amounts array (same length as `to`).
-     *
-     * @dev Sums total to pre-check cap (if non-zero). Pausable-protected.
-     * @custom:reverts len mismatch if `to.length != amounts.length`
-     * @custom:reverts overflow     if intermediate sum overflows
-     * @custom:reverts cap exceeded if cap would be exceeded by batch
-     */
+    /// @notice Batch mint to multiple recipients (MINTER_ROLE).
+    /// @param to       Recipients array.
+    /// @param amounts  Amounts array (same length as `to`).
+    ///
+    /// @dev Sums total to pre-check cap (if non-zero). Pausable-protected.
+    /// @custom:reverts len mismatch if `to.length != amounts.length`
+    /// @custom:reverts overflow     if intermediate sum overflows
+    /// @custom:reverts cap exceeded if cap would be exceeded by batch
     function batchMint(address[] calldata to, uint256[] calldata amounts)
         external
         onlyRole(MINTER_ROLE)
@@ -221,25 +209,21 @@ contract FlexibleToken is
         }
     }
 
-    /**
-     * @notice Burn tokens from `from` (MINTER_ROLE).
-     * @param from    Address to burn from.
-     * @param amount  Amount to burn.
-     *
-     * @dev Pausable-protected. No cap update needed (cap is max totalSupply).
-     */
+    /// @notice Burn tokens from `from` (MINTER_ROLE).
+    /// @param from    Address to burn from.
+    /// @param amount  Amount to burn.
+    ///
+    /// @dev Pausable-protected. No cap update needed (cap is max totalSupply).
     function burn(address from, uint256 amount) external onlyRole(MINTER_ROLE) whenNotPaused {
         _burn(from, amount);
     }
 
-    /**
-     * @notice Batch burn from multiple addresses (MINTER_ROLE).
-     * @param from     Holder addresses.
-     * @param amounts  Amounts to burn per holder.
-     *
-     * @dev Pausable-protected.
-     * @custom:reverts len mismatch if `from.length != amounts.length`
-     */
+    /// @notice Batch burn from multiple addresses (MINTER_ROLE).
+    /// @param from     Holder addresses.
+    /// @param amounts  Amounts to burn per holder.
+    ///
+    /// @dev Pausable-protected.
+    /// @custom:reverts len mismatch if `from.length != amounts.length`
     function batchBurn(address[] calldata from, uint256[] calldata amounts)
         external
         onlyRole(MINTER_ROLE)
@@ -249,26 +233,24 @@ contract FlexibleToken is
         for (uint256 i; i < from.length; ++i) _burn(from[i], amounts[i]);
     }
 
-    /*── Voucher (optional airdrop) ───────────────────────────*/
+    // Voucher (optional airdrop)
 
-    /**
-     * @notice Redeem a signed mint voucher (EIP-712) and mint to `v.to` or caller.
-     * @param v    MintVoucher struct (issuer, to, amount, validUntil, nonce).
-     * @param sig  ECDSA signature by `v.issuer` over the EIP-712 typed data.
-     * @return uint256 The amount minted.
-     *
-     * @dev
-     * - Rejects expired vouchers and replays (`redeemed[digest]`).
-     * - Signer must hold MINTER_ROLE and equal `v.issuer`.
-     * - Respects cap if non-zero.
-     * - Emits `VoucherRedeemed`.
-     *
-     * @custom:reverts voucher expired if `block.timestamp > v.validUntil`
-     * @custom:reverts cap exceeded    if mint would exceed cap
-     * @custom:reverts voucher used    on replay
-     * @custom:reverts bad signer      if recovered signer lacks MINTER_ROLE
-     * @custom:reverts issuer mismatch if signer != v.issuer
-     */
+    /// @notice Redeem a signed mint voucher (EIP-712) and mint to `v.to` or caller.
+    /// @param v    MintVoucher struct (issuer, to, amount, validUntil, nonce).
+    /// @param sig  ECDSA signature by `v.issuer` over the EIP-712 typed data.
+    /// @return uint256 The amount minted.
+    ///
+    /// @dev
+    /// - Rejects expired vouchers and replays (`redeemed[digest]`).
+    /// - Signer must hold MINTER_ROLE and equal `v.issuer`.
+    /// - Respects cap if non-zero.
+    /// - Emits `VoucherRedeemed`.
+    ///
+    /// @custom:reverts voucher expired if `block.timestamp > v.validUntil`
+    /// @custom:reverts cap exceeded    if mint would exceed cap
+    /// @custom:reverts voucher used    on replay
+    /// @custom:reverts bad signer      if recovered signer lacks MINTER_ROLE
+    /// @custom:reverts issuer mismatch if signer != v.issuer
     function redeemVoucher(MintVoucher calldata v, bytes calldata sig)
         external nonReentrant whenNotPaused returns (uint256)
     {
@@ -295,49 +277,41 @@ contract FlexibleToken is
         return v.amount;
     }
 
-    /*────────────────── Cap Management ───────────────────────*/
+    // Cap Management
 
-    /**
-     * @notice Update cap; 0 means unlimited.
-     * @param newCap New cap value.
-     *
-     * @dev Only ADMIN_ROLE. Must be >= current totalSupply if non-zero.
-     *      Emits `CapChanged(oldCap, newCap)`.
-     * @custom:reverts invalid cap if newCap != 0 && newCap < totalSupply()
-     */
+    /// @notice Update cap; 0 means unlimited.
+    /// @param newCap New cap value.
+    ///
+    /// @dev Only ADMIN_ROLE. Must be >= current totalSupply if non-zero.
+    ///      Emits `CapChanged(oldCap, newCap)`.
+    /// @custom:reverts invalid cap if newCap != 0 && newCap < totalSupply()
     function setCap(uint256 newCap) external onlyRole(ADMIN_ROLE) {
         require(newCap == 0 || newCap >= totalSupply(), "invalid cap");
         emit CapChanged(_cap, newCap);
         _cap = newCap;
     }
 
-    /**
-     * @notice Read current cap (0 means unlimited).
-     * @return uint256 Cap value.
-     */
+    /// @notice Read current cap (0 means unlimited).
+    /// @return uint256 Cap value.
     function cap() external view returns (uint256) { return _cap; }
 
-    /*────────────────── Whitelist (optional) ────────────────*/
+    // Whitelist (optional)
 
-    /**
-     * @notice Set or replace the whitelist registry.
-     * @param registry Whitelist contract address (or zero to disable checks).
-     *
-     * @dev Only GUARDIAN_ROLE. Emits `WhitelistConfigured`.
-     */
+    /// @notice Set or replace the whitelist registry.
+    /// @param registry Whitelist contract address (or zero to disable checks).
+    ///
+    /// @dev Only GUARDIAN_ROLE. Emits `WhitelistConfigured`.
     function setWhitelist(address registry) external onlyRole(GUARDIAN_ROLE) {
         whitelist = IWhitelist(registry);
         emit WhitelistConfigured(registry);
     }
 
-    /**
-     * @notice Enforce whitelist on non-mint/burn transfers if registry is set.
-     * @param from Sender address.
-     * @param to   Recipient address.
-     *
-     * @dev Mint/burn (involving address(0)) are exempt.
-     * @custom:reverts SENDER_NOT_WL / RECIP_NOT_WL if registry denies either party.
-     */
+    /// @notice Enforce whitelist on non-mint/burn transfers if registry is set.
+    /// @param from Sender address.
+    /// @param to   Recipient address.
+    ///
+    /// @dev Mint/burn (involving address(0)) are exempt.
+    /// @custom:reverts SENDER_NOT_WL / RECIP_NOT_WL if registry denies either party.
     function _enforceWL(address from, address to) internal view {
         if (address(whitelist) == address(0)) return;
         if (from == address(0) || to == address(0)) return;
@@ -345,17 +319,15 @@ contract FlexibleToken is
         require(whitelist.isWhitelisted(to),   "RECIP_NOT_WL");
     }
 
-    /*─────────────── Internal Overrides ─────────────────────*/
+    // Internal Overrides
 
-    /**
-     * @notice Core ERC20/Votes balance update hook with pause, soul-bound, and whitelist enforcement.
-     * @param from    Sender (address(0) for mint).
-     * @param to      Recipient (address(0) for burn).
-     * @param amount  Transfer amount.
-     *
-     * @dev When `transferable == false`, only mint or burn are allowed; user-to-user transfers revert.
-     *      Pausable is enforced via modifier, then whitelist checked, then super._update.
-     */
+    /// @notice Core ERC20/Votes balance update hook with pause, soul-bound, and whitelist enforcement.
+    /// @param from    Sender (address(0) for mint).
+    /// @param to      Recipient (address(0) for burn).
+    /// @param amount  Transfer amount.
+    ///
+    /// @dev When `transferable == false`, only mint or burn are allowed; user-to-user transfers revert.
+    ///      Pausable is enforced via modifier, then whitelist checked, then super._update.
     function _update(address from, address to, uint256 amount)
         internal override(ERC20Upgradeable, ERC20VotesUpgradeable) whenNotPaused
     {
@@ -366,39 +338,27 @@ contract FlexibleToken is
         super._update(from, to, amount);
     }
 
-    /*──────────────── Pause Control ─────────────────────────*/
+    // Pause Control
 
-    /**
-     * @notice Pause state-changing entrypoints (PAUSER_ROLE).
-     */
+    /// @notice Pause state-changing entrypoints (PAUSER_ROLE).
     function pause()   external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints (PAUSER_ROLE).
-     */
+    /// @notice Unpause state-changing entrypoints (PAUSER_ROLE).
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
-    /*───────────────── Meta-tx overrides ───────────────────*/
+    // Meta-tx overrides
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData()   internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     */
+    /// @notice Authorize UUPS upgrade; only ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-    /*──────────────── Storage Gap ───────────────────────────*/
+    // Storage Gap
 
-    /**
-     * @dev Reserved storage to allow future variable additions while preserving layout.
-     */
+    /// @dev Reserved storage to allow future variable additions while preserving layout.
     uint256[43] private __gap;
 }

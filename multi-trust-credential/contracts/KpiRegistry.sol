@@ -54,22 +54,15 @@ contract KpiRegistry is
     ERC2771ContextUpgradeable,
     RolesCommonUpgradeable
 {
-    /*────────────────────────── Roles ──────────────────────────*/
+    // Roles
 
     /// @notice Addresses permitted to push KPI values to MTC.
     bytes32 public constant ORACLE_ROLE = keccak256("ORACLE_ROLE");
 
-    /*────────────────────────── Structs ────────────────────────*/
+    // Structs
 
-    /**
-     * @notice KPI metadata (registry only).
-     * @param projectId   Project/group identifier that owns the KPI.
-     * @param label       Human-readable label (used to derive `metricId`).
-     * @param decimals    UI/display hint for numeric KPIs (>0 for registered).
-     * @param compareMask Allowed comparison mask (bitwise OR of CompareMask: GTE=1, LTE=2, EQ=4).
-     * @param threshold   Threshold value for numeric KPIs (used for `ThresholdHit`).
-     * @param commitment  If true, KPI is commitment/hash-based (no numeric thresholding).
-     */
+    /// @notice KPI metadata stored by the registry.
+    /// `projectId` groups KPIs by project, `label` helps derive `metricId`, and the remaining fields describe display and threshold behavior.
     struct Meta {
         bytes32 projectId;
         string  label;
@@ -79,7 +72,7 @@ contract KpiRegistry is
         bool    commitment;
     }
 
-    /*────────────────────────── Storage ────────────────────────*/
+    // Storage
 
     /// @dev KPI registry by metricId (derived from `{projectId,label}`).
     mapping(bytes32 => Meta) private kpis;
@@ -93,7 +86,7 @@ contract KpiRegistry is
     /// @notice External credential contract where KPI values are written.
     MultiTrustCredential public mtc;
 
-    /*────────────────────────── Events ─────────────────────────*/
+    // Events
 
     /// @notice Emitted when a KPI is registered.
     event MetricRegistered(bytes32 indexed metricId, bytes32 indexed projectId, string label);
@@ -104,18 +97,14 @@ contract KpiRegistry is
     /// @notice Emitted if a **numeric** KPI satisfies its comparison rule against `threshold`.
     event ThresholdHit(bytes32 indexed metricId, uint256 value, uint256 ts);
 
-    /*────────────────────────── Initializer ────────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize the KPI registry.
-     * @param admin        Admin address (granted roles via RolesCommon).
-     * @param mtcAddress   Deployed `MultiTrustCredential` contract address (immutable after init).
-     * @param forwarders   Trusted ERC-2771 forwarders for meta-transactions.
-     *
-     * @dev Calls initializers for ReentrancyGuard, Pausable, UUPS, ERC2771, and RolesCommon.
-     *
-     * @custom:reverts zero addr if any of {admin, mtcAddress} is zero
-     */
+    /// @notice Initialize the KPI registry.
+    /// @param admin Admin address granted hazBase admin roles.
+    /// @param mtcAddress Deployed `MultiTrustCredential` contract address.
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Calls initializers for reentrancy guard, pause control, UUPS, ERC-2771, and shared roles.
+    /// @custom:reverts zero addr if any of {admin, mtcAddress} is zero
     function initialize(address admin, address mtcAddress, address[] calldata forwarders) external initializer {
         require(admin != address(0) && mtcAddress != address(0), "zero addr");
         __ReentrancyGuard_init();
@@ -128,29 +117,22 @@ contract KpiRegistry is
         mtc = MultiTrustCredential(mtcAddress);
     }
 
-    /*──────────────────────── KPI Registration ─────────────────*/
+    // KPI registration
 
-    /**
-     * @notice Register a new KPI metadata entry and mirror its metric in MTC.
-     * @param projectId   Project identifier that owns this KPI.
-     * @param label       KPI label (non-empty); used together with `projectId` to derive `metricId`.
-     * @param roleName    Writer role name for MTC (who may mint/update the metric in MTC).
-     * @param decimals    Display decimals (must be > 0 to mark registered).
-     * @param compareMask Allowed comparison mask (0..7, bitwise OR of CompareMask).
-     * @param threshold   Numeric threshold for `ThresholdHit` (ignored when `commitment=true`).
-     * @param commitment  If true, treat as commitment/hash KPI (no threshold evaluation).
-     * @return metricId   Deterministic id: `keccak256(abi.encodePacked(projectId, label))`.
-     *
-     * @dev
-     * - Reverts if the derived `metricId` already exists in this registry.
-     * - Also **registers** the metric in MTC by calling `mtc.registerMetric(...)`.
-     * - Emits `MetricRegistered`.
-     *
-     * @custom:reverts label empty if `label.length == 0`
-     * @custom:reverts bad mask   if `compareMask > 7`
-     * @custom:reverts decimals=0 if `decimals == 0`
-     * @custom:reverts exists     if KPI already registered
-     */
+    /// @notice Register a new KPI metadata entry and mirror its metric in MTC.
+    /// @param projectId Project identifier that owns this KPI.
+    /// @param label Human-readable KPI label used together with `projectId` to derive `metricId`.
+    /// @param roleName MTC writer role name that will be required for updates.
+    /// @param decimals Display decimals; must be non-zero for a registered KPI.
+    /// @param compareMask Allowed comparison mask (0..7, bitwise OR of CompareMask).
+    /// @param threshold Numeric threshold for `ThresholdHit` when this KPI is not commitment-based.
+    /// @param commitment Whether the KPI should be treated as a commitment/hash metric.
+    /// @return metricId Deterministic id `keccak256(abi.encodePacked(projectId, label))`.
+    /// @dev Also registers the mirrored metric inside MTC via `mtc.registerMetric(...)`.
+    /// @custom:reverts label empty if `label.length == 0`
+    /// @custom:reverts bad mask if `compareMask > 7`
+    /// @custom:reverts decimals=0 if `decimals == 0`
+    /// @custom:reverts exists if KPI already registered
     function registerKpi(
         bytes32 projectId,
         string  calldata label,
@@ -188,23 +170,13 @@ contract KpiRegistry is
         emit MetricRegistered(metricId, projectId, label);
     }
 
-    /*──────────────────────── KPI Value Update ─────────────────*/
+    // KPI value updates
 
-    /**
-     * @notice Push a KPI value into MTC and record an epoch timestamp.
-     * @param tokenId Credential token id in MTC to update (holder address cast to uint).
-     * @param upd     MTC `MetricUpdate` struct {metricId, newValue, leafFull, deadline}.
-     *
-     * @dev
-     * - Caller must have `ORACLE_ROLE`.
-     * - Validates that KPI is registered (`decimals > 0`).
-     * - Delegates the actual write to `mtc.updateMetric(tokenId, upd)`.
-     * - Appends `block.timestamp` to `epochs[metricId]`, emits `MetricUpdated`.
-     * - If KPI is **numeric** (`commitment=false`) and `_compare(mask, newValue, threshold)` holds,
-     *   emits `ThresholdHit`.
-     *
-     * @custom:reverts not registered if KPI meta not found (decimals == 0)
-     */
+    /// @notice Push a KPI value into MTC and record an epoch timestamp.
+    /// @param tokenId Credential token id in MTC to update.
+    /// @param upd MTC `MetricUpdate` payload that carries the new metric value.
+    /// @dev Only ORACLE_ROLE may push values. Numeric KPIs emit `ThresholdHit` when they satisfy the configured comparison rule.
+    /// @custom:reverts not registered if KPI meta not found (decimals == 0)
     function pushKpiValue(
         uint256 tokenId,
         MultiTrustCredential.MetricUpdate calldata upd
@@ -222,48 +194,39 @@ contract KpiRegistry is
         }
     }
 
-    /*────────────────────────── Views ──────────────────────────*/
+    // Views
 
-    /**
-     * @notice Read KPI metadata by `metricId`.
-     * @param metricId KPI id (derived in `registerKpi`).
-     * @return Meta KPI metadata struct.
-     */
+    /// @notice Read KPI metadata by `metricId`.
+    /// @param metricId KPI id derived in `registerKpi`.
+    /// @return Meta KPI metadata struct.
     function kpiMeta(bytes32 metricId) external view returns (Meta memory) {
         return kpis[metricId];
     }
 
-    /**
-     * @notice Get latest update timestamp for a KPI.
-     * @param metricId KPI id.
-     * @return uint256 Latest epoch timestamp (0 if none).
-     */
+    /// @notice Get the latest update timestamp for a KPI.
+    /// @param metricId KPI id.
+    /// @return uint256 Latest epoch timestamp, or zero when the KPI has never been updated.
     function latestTimestamp(bytes32 metricId) external view returns (uint256) {
         uint256[] storage arr = epochs[metricId];
         if (arr.length == 0) return 0;
         return arr[arr.length - 1];
     }
 
-    /**
-     * @notice List KPI ids registered under a project.
-     * @param projectId Project identifier.
-     * @return bytes32[] Array of KPI metric ids (may be empty).
-     */
+    /// @notice List KPI ids registered under a project.
+    /// @param projectId Project identifier.
+    /// @return bytes32[] Array of KPI metric ids, which may be empty.
     function listProjectKpis(bytes32 projectId) external view returns (bytes32[] memory) {
         return projectKpis[projectId];
     }
 
-    /*───────────────────────── Internals ───────────────────────*/
+    // Internal helpers
 
-    /**
-     * @notice Evaluate comparison mask against `(v, th)`.
-     * @param mask Comparison mask (bitwise OR of CompareMask).
-     * @param v    Value.
-     * @param th   Threshold.
-     * @return bool True if all **enabled** comparisons pass.
-     *
-     * @dev CompareMask constants (GTE=1, LTE=2, EQ=4) are provided by the MTC unit.
-     */
+    /// @notice Evaluate a comparison mask against `(v, th)`.
+    /// @param mask Comparison mask encoded as a bitwise OR of CompareMask values.
+    /// @param v Candidate value.
+    /// @param th Threshold value.
+    /// @return bool True when every enabled comparison relation passes.
+    /// @dev CompareMask constants are imported from the MTC contract.
     function _compare(uint8 mask, uint256 v, uint256 th) internal pure returns (bool) {
         bool ok = true;
         if (mask & CompareMask.GT != 0) ok = ok && (v > th);
@@ -272,33 +235,23 @@ contract KpiRegistry is
         return ok;
     }
 
-    /*────────────────────── Pause / Upgrade ────────────────────*/
+    // Pause and upgrade
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     */
+    /// @notice Authorize a UUPS upgrade; only ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
     /// @dev Storage gap reserved for future upgrades.

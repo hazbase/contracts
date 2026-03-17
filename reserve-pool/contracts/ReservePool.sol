@@ -65,18 +65,16 @@ contract ReservePool is
 {
     using SafeERC20 for IERC20;
 
-    /*────────────────────────── Roles ──────────────────────────*/
+    // Roles
 
     /// @notice Role allowed to trigger buy-backs during circuit-break events.
     bytes32 public constant CIRCUIT_BREAKER_ROLE = keccak256("CIRCUIT_BREAKER_ROLE");
 
-    /*────────────────────────── Storage ────────────────────────*/
+    // Storage
 
-    /**
-     * @dev Per-token reserve buckets.
-     * @param liquidity    Usable balance for buy-backs (router swaps).
-     * @param compensation Reserved balance for user compensation payouts.
-     */
+    /// @dev Per-token reserve buckets.
+    /// @param liquidity Usable balance for buy-backs (router swaps).
+    /// @param compensation Reserved balance for user compensation payouts.
     struct Balances {
         uint128 liquidity;
         uint128 compensation;
@@ -97,7 +95,7 @@ contract ReservePool is
     /// @notice Protocol token to be bought back (must be last element of swap path).
     address public protocolToken;
 
-    /*────────────────────────── Events ─────────────────────────*/
+    // Events
 
     /// @notice Emitted when liquidity bucket is funded.
     event LiquidityFunded(address indexed token, uint256 amount);
@@ -112,20 +110,16 @@ contract ReservePool is
     /// @notice Emitted when cooldown is updated.
     event BuyBackCooldownUpdated(uint256 newCooldown);
 
-    /*────────────────────────── Initializer ────────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize the reserve pool.
-     * @param admin           Address to be granted admin/guardian/… roles via RolesCommon.
-     * @param router_         AMM router used for buy-backs.
-     * @param protocolToken_  Token to accumulate via buy-backs (must be path end).
-     * @param forwarders      Trusted ERC-2771 forwarders for meta-transactions.
-     *
-     * @dev Sets default buy-back cooldown to 1 day.
-     *
-     * @custom:reverts router=0        if `router_` is zero
-     * @custom:reverts protocolToken=0 if `protocolToken_` is zero
-     */
+    /// @notice Initialize the reserve pool.
+    /// @param admin Address to be granted admin/guardian/... roles via RolesCommon.
+    /// @param router_ AMM router used for buy-backs.
+    /// @param protocolToken_ Token to accumulate via buy-backs (must be path end).
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Sets the default buy-back cooldown to 1 day.
+    /// @custom:reverts router=0 if `router_` is zero
+    /// @custom:reverts protocolToken=0 if `protocolToken_` is zero
     function initialize(
         address admin,
         address router_,
@@ -146,33 +140,25 @@ contract ReservePool is
         buyBackCooldown = 1 days;
     }
 
-    /*────────────────────────── Configuration ─────────────────*/
+    // Configuration
 
-    /**
-     * @notice Update the global buy-back cooldown.
-     * @param newCooldown New cooldown in seconds (0 < newCooldown < 30 days).
-     *
-     * @dev Only GUARDIAN_ROLE. Emits `BuyBackCooldownUpdated`.
-     *
-     * @custom:reverts invalid cooldown if outside (0, 30 days)
-     */
+    /// @notice Update the global buy-back cooldown.
+    /// @param newCooldown New cooldown in seconds (0 < newCooldown < 30 days).
+    /// @dev Only `GUARDIAN_ROLE`. Emits `BuyBackCooldownUpdated`.
+    /// @custom:reverts invalid cooldown if outside (0, 30 days)
     function setBuyBackCooldown(uint256 newCooldown) external onlyRole(GUARDIAN_ROLE) {
         require(newCooldown > 0 && newCooldown < 30 days, "invalid cooldown");
         buyBackCooldown = newCooldown;
         emit BuyBackCooldownUpdated(newCooldown);
     }
 
-    /*────────────────────────── Reserve Funding ───────────────*/
+    // Reserve funding
 
-    /**
-     * @notice Fund the **liquidity** bucket for `token` by `amount`.
-     * @param token  ERC20 token address or address(0) for native ETH.
-     * @param amount Amount to fund (wei for ETH; token units for ERC20).
-     *
-     * @dev Caller must have ROYALTY_ROLE (e.g., DAO/FeeTreasury).
-     *      Uses `_receiveToken` to collect ERC20/ETH safely.
-     *      Emits `LiquidityFunded`.
-     */
+    /// @notice Fund the liquidity bucket for `token` by `amount`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param amount Amount to fund (wei for ETH; token units for ERC20).
+    /// @dev Caller must have `ROYALTY_ROLE`. This uses `_receiveToken` to collect the asset safely
+    /// and emits `LiquidityFunded`.
     function fundLiquidity(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) {
         require(token != address(0), "native liquidity disabled");
         _receiveToken(token, amount);
@@ -180,42 +166,31 @@ contract ReservePool is
         emit LiquidityFunded(token, amount);
     }
 
-    /**
-     * @notice Fund the **compensation** bucket for `token` by `amount`.
-     * @param token  ERC20 token address or address(0) for native ETH.
-     * @param amount Amount to fund.
-     *
-     * @dev Caller must have ROYALTY_ROLE. Emits `CompensationFunded`.
-     */
+    /// @notice Fund the compensation bucket for `token` by `amount`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param amount Amount to fund.
+    /// @dev Caller must have `ROYALTY_ROLE`. Emits `CompensationFunded`.
     function fundCompensation(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) {
         _receiveToken(token, amount);
         _tokenBalances[token].compensation += uint128(amount);
         emit CompensationFunded(token, amount);
     }
 
-    /*────────────────────────── Forced Buy-Back ───────────────*/
+    // Forced buy-back
 
-    /**
-     * @notice Execute a buy-back swap from `tokenIn` to `protocolToken` via router.
-     * @param tokenIn       Reserve token to spend (e.g., stablecoin or WETH).
-     * @param amountIn      Amount taken from the **liquidity** bucket.
-     * @param minAmountOut  Minimum `protocolToken` expected (slippage guard).
-     * @param path          Router swap path (must start with `tokenIn` and end with `protocolToken`).
-     * @return amountOut    Actual amount of `protocolToken` received.
-     *
-     * @dev
-     * - Only `CIRCUIT_BREAKER_ROLE`.
-     * - Enforces `buyBackCooldown` per `tokenIn`.
-     * - Deducts from liquidity bucket before swap; increases allowance if needed.
-     * - Sets a 15-minute router deadline (now + 900).
-     * - Emits `BuyBackExecuted` and updates `lastBuyBackAt[tokenIn]`.
-     *
-     * @custom:reverts COOLDOWN                 if last swap was too recent
-     * @custom:reverts path length              if `path.length < 2`
-     * @custom:reverts path[0] != tokenIn       if path start mismatch
-     * @custom:reverts path end != protocolToken if path end mismatch
-     * @custom:reverts insufficient reserve     if `amountIn > liquidity`
-     */
+    /// @notice Execute a buy-back swap from `tokenIn` to `protocolToken` via the router.
+    /// @param tokenIn Reserve token to spend (e.g. stablecoin or WETH).
+    /// @param amountIn Amount taken from the liquidity bucket.
+    /// @param minAmountOut Minimum `protocolToken` expected (slippage guard).
+    /// @param path Router swap path (must start with `tokenIn` and end with `protocolToken`).
+    /// @return amountOut Actual amount of `protocolToken` received.
+    /// @dev Only `CIRCUIT_BREAKER_ROLE`. This enforces `buyBackCooldown`, deducts liquidity before
+    /// swapping, and updates `lastBuyBackAt[tokenIn]` after success.
+    /// @custom:reverts COOLDOWN if last swap was too recent
+    /// @custom:reverts path length if `path.length < 2`
+    /// @custom:reverts path[0] != tokenIn if path start mismatch
+    /// @custom:reverts path end != protocolToken if path end mismatch
+    /// @custom:reverts insufficient reserve if `amountIn > liquidity`
     function triggerBuyBack(
         address tokenIn,
         uint256 amountIn,
@@ -248,18 +223,14 @@ contract ReservePool is
         lastBuyBackAt[tokenIn] = block.timestamp;
     }
 
-    /*────────────────────────── Compensation ──────────────────*/
+    // Compensation
 
-    /**
-     * @notice Pay out compensation from the **compensation** bucket.
-     * @param token  ERC20 token address or address(0) for native ETH.
-     * @param to     Recipient address.
-     * @param amount Amount to send.
-     *
-     * @dev Only GUARDIAN_ROLE; non-reentrant. Emits `CompensationPaid`.
-     *
-     * @custom:reverts exceeds compensation reserve if `amount > compensation bucket`
-     */
+    /// @notice Pay out compensation from the compensation bucket.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param to Recipient address.
+    /// @param amount Amount to send.
+    /// @dev Only `GUARDIAN_ROLE`; non-reentrant. Emits `CompensationPaid`.
+    /// @custom:reverts exceeds compensation reserve if `amount > compensation bucket`
     function payCompensation(address token, address to, uint256 amount)
         external
         onlyRole(GUARDIAN_ROLE)
@@ -272,18 +243,14 @@ contract ReservePool is
         emit CompensationPaid(token, to, amount);
     }
 
-    /*────────────────────────── Bucket Sweep / Re-alloc ───────*/
+    // Bucket sweep and re-allocation
 
-    /**
-     * @notice Move funds between buckets for `token`.
-     * @param token          ERC20 token address or address(0) for native ETH.
-     * @param amount         Amount to move.
-     * @param toCompensation If true, move from liquidity → compensation; else the opposite.
-     *
-     * @dev Only GUARDIAN_ROLE. Emits `Sweep`.
-     *
-     * @custom:reverts exceeds liquidity/compensation if `amount` exceeds source bucket
-     */
+    /// @notice Move funds between buckets for `token`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param amount Amount to move.
+    /// @param toCompensation If true, move from liquidity -> compensation; else the opposite.
+    /// @dev Only `GUARDIAN_ROLE`. Emits `Sweep`.
+    /// @custom:reverts exceeds liquidity/compensation if `amount` exceeds source bucket
     function sweep(address token, uint256 amount, bool toCompensation) external onlyRole(GUARDIAN_ROLE) {
         Balances storage bal = _tokenBalances[token];
         if (toCompensation) {
@@ -298,39 +265,31 @@ contract ReservePool is
         emit Sweep(token, amount, toCompensation);
     }
 
-    /*────────────────────────── Views ─────────────────────────*/
+    // Views
 
-    /**
-     * @notice Read the liquidity bucket for `token`.
-     * @param token ERC20 token address or address(0) for native ETH.
-     * @return uint256 Current liquidity balance.
-     */
+    /// @notice Read the liquidity bucket for `token`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @return Current liquidity balance.
     function liquidityOf(address token) external view returns (uint256) {
         return _tokenBalances[token].liquidity;
     }
 
-    /**
-     * @notice Read the compensation bucket for `token`.
-     * @param token ERC20 token address or address(0) for native ETH.
-     * @return uint256 Current compensation balance.
-     */
+    /// @notice Read the compensation bucket for `token`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @return Current compensation balance.
     function compensationOf(address token) external view returns (uint256) {
         return _tokenBalances[token].compensation;
     }
 
-    /*────────────────────────── Internal utils ────────────────*/
+    // Internal utilities
 
-    /**
-     * @notice Collect tokens/ETH from caller.
-     * @param token  ERC20 token address or address(0) for native ETH.
-     * @param amount Expected amount to receive.
-     *
-     * @dev For ETH, requires `msg.value == amount`. For ERC20, requires `msg.value == 0`
-     *      and pulls tokens from `_msgSender()` via `safeTransferFrom`.
-     *
-     * @custom:reverts ETH amount mismatch if `msg.value != amount` for ETH
-     * @custom:reverts unexpected ETH       if `msg.value != 0` for ERC20 deposits
-     */
+    /// @notice Collect tokens or ETH from the caller.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param amount Expected amount to receive.
+    /// @dev For ETH this requires `msg.value == amount`. For ERC20 this requires `msg.value == 0`
+    /// and pulls tokens from `_msgSender()` via `safeTransferFrom`.
+    /// @custom:reverts ETH amount mismatch if `msg.value != amount` for ETH
+    /// @custom:reverts unexpected ETH if `msg.value != 0` for ERC20 deposits
     function _receiveToken(address token, uint256 amount) internal {
         if (token == address(0)) {
             require(msg.value == amount, "ETH amount mismatch");
@@ -340,12 +299,10 @@ contract ReservePool is
         }
     }
 
-    /**
-     * @notice Send tokens/ETH to `to`.
-     * @param token  ERC20 token address or address(0) for native ETH.
-     * @param to     Recipient.
-     * @param amount Amount to send.
-     */
+    /// @notice Send tokens or ETH to `to`.
+    /// @param token ERC20 token address or address(0) for native ETH.
+    /// @param to Recipient.
+    /// @param amount Amount to send.
     function _sendToken(address token, address to, uint256 amount) internal {
         if (token == address(0)) {
             payable(to).transfer(amount);
@@ -354,39 +311,27 @@ contract ReservePool is
         }
     }
 
-    /*────────────────────────── Pause / Upgrade ───────────────*/
+    // Pause and upgrade
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause() external onlyRole(PAUSER_ROLE) { _pause(); }
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     */
+    /// @notice Authorize UUPS upgrade; only ADMIN_ROLE.
     function _authorizeUpgrade(address) internal override onlyRole(ADMIN_ROLE) {}
 
-    /**
-     * @notice Accept native ETH and credit to the **compensation** bucket.
-     * @dev Emits `CompensationFunded(address(0), msg.value)`.
-     */
+    /// @notice Accept native ETH and credit it to the compensation bucket.
+    /// @dev Emits `CompensationFunded(address(0), msg.value)`.
     receive() external payable {
         _tokenBalances[address(0)].compensation += uint128(msg.value);
         emit CompensationFunded(address(0), msg.value);

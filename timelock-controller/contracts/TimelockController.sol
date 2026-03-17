@@ -50,38 +50,23 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         Done
     }
 
-    /**
-     * @dev Mismatch between the parameters length for an operation call.
-     */
+    /// @dev Mismatch between the parameter lengths for an operation call.
     error TimelockInvalidOperationLength(uint256 targets, uint256 payloads, uint256 values);
 
-    /**
-     * @dev The schedule operation doesn't meet the minimum delay.
-     */
+    /// @dev The scheduled operation does not meet the minimum delay.
     error TimelockInsufficientDelay(uint256 delay, uint256 minDelay);
 
-    /**
-     * @dev The current state of an operation is not as required.
-     * The `expectedStates` is a bitmap with the bits enabled for each OperationState enum position
-     * counting from right to left.
-     *
-     * See {_encodeStateBitmap}.
-     */
+    /// @dev The current state of an operation is not as required.
+    /// `expectedStates` is a bitmap with enabled bits for each `OperationState` position; see `_encodeStateBitmap`.
     error TimelockUnexpectedOperationState(bytes32 operationId, bytes32 expectedStates);
 
-    /**
-     * @dev The predecessor to an operation not yet done.
-     */
+    /// @dev The predecessor to an operation is not yet done.
     error TimelockUnexecutedPredecessor(bytes32 predecessorId);
 
-    /**
-     * @dev The caller account is not authorized.
-     */
+    /// @dev The caller account is not authorized.
     error TimelockUnauthorizedCaller(address caller);
 
-    /**
-     * @dev Emitted when a call is scheduled as part of operation `id`.
-     */
+    /// @dev Emitted when a call is scheduled as part of operation `id`.
     event CallScheduled(
         bytes32 indexed id,
         uint256 indexed index,
@@ -92,24 +77,16 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         uint256 delay
     );
 
-    /**
-     * @dev Emitted when a call is performed as part of operation `id`.
-     */
+    /// @dev Emitted when a call is performed as part of operation `id`.
     event CallExecuted(bytes32 indexed id, uint256 indexed index, address target, uint256 value, bytes data);
 
-    /**
-     * @dev Emitted when new proposal is scheduled with non-zero salt.
-     */
+    /// @dev Emitted when a new proposal is scheduled with a non-zero salt.
     event CallSalt(bytes32 indexed id, bytes32 salt);
 
-    /**
-     * @dev Emitted when operation `id` is cancelled.
-     */
+    /// @dev Emitted when operation `id` is cancelled.
     event Cancelled(bytes32 indexed id);
 
-    /**
-     * @dev Emitted when the minimum delay for future operations is modified.
-     */
+    /// @dev Emitted when the minimum delay for future operations is modified.
     event MinDelayChange(uint256 oldDuration, uint256 newDuration);
 
     constructor() { _disableInitializers(); }
@@ -117,19 +94,8 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
     function initialize(uint256 minDelay, address[] memory proposers, address[] memory executors, address admin) public virtual initializer {
         __TimelockController_init(minDelay, proposers, executors, admin);
     }
-    /**
-     * @dev Initializes the contract with the following parameters:
-     *
-     * - `minDelay`: initial minimum delay in seconds for operations
-     * - `proposers`: accounts to be granted proposer and canceller roles
-     * - `executors`: accounts to be granted executor role
-     * - `admin`: optional account to be granted admin role; disable with zero address
-     *
-     * IMPORTANT: The optional admin can aid with initial configuration of roles after deployment
-     * without being subject to delay, but this role should be subsequently renounced in favor of
-     * administration through timelocked proposals. Previous versions of this contract would assign
-     * this admin to the deployer automatically and should be renounced as well.
-     */
+    /// @dev Initialize the timelock with a minimum delay, proposer set, executor set, and optional admin.
+    /// The optional admin helps with initial configuration but should be renounced in favor of timelocked administration.
     function __TimelockController_init(uint256 minDelay, address[] memory proposers, address[] memory executors, address admin) internal onlyInitializing {
         __TimelockController_init_unchained(minDelay, proposers, executors, admin);
     }
@@ -159,12 +125,7 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         emit MinDelayChange(0, minDelay);
     }
 
-    /**
-     * @dev Modifier to make a function callable only by a certain role. In
-     * addition to checking the sender's role, `address(0)` 's role is also
-     * considered. Granting a role to `address(0)` is equivalent to enabling
-     * this role for everyone.
-     */
+    /// @dev Make a function callable only by a certain role, unless that role is granted to `address(0)` for open access.
     modifier onlyRoleOrOpenRole(bytes32 role) {
         if (!hasRole(role, address(0))) {
             _checkRole(role, _msgSender());
@@ -172,62 +133,44 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         _;
     }
 
-    /**
-     * @dev Contract might receive/hold ETH as part of the maintenance process.
-     */
+    /// @dev Allow the timelock to receive and hold ETH as part of scheduled maintenance flows.
     receive() external payable virtual {}
 
-    /**
-     * @dev See {IERC165-supportsInterface}.
-     */
+    /// @dev See {IERC165-supportsInterface}.
     function supportsInterface(
         bytes4 interfaceId
     ) public view virtual override(AccessControlUpgradeable, ERC1155HolderUpgradeable) returns (bool) {
         return super.supportsInterface(interfaceId);
     }
 
-    /**
-     * @dev Returns whether an id corresponds to a registered operation. This
-     * includes both Waiting, Ready, and Done operations.
-     */
+    /// @dev Return whether an id corresponds to a registered operation, including Waiting, Ready, and Done states.
     function isOperation(bytes32 id) public view returns (bool) {
         return getOperationState(id) != OperationState.Unset;
     }
 
-    /**
-     * @dev Returns whether an operation is pending or not. Note that a "pending" operation may also be "ready".
-     */
+    /// @dev Return whether an operation is pending. A ready operation is also considered pending.
     function isOperationPending(bytes32 id) public view returns (bool) {
         OperationState state = getOperationState(id);
         return state == OperationState.Waiting || state == OperationState.Ready;
     }
 
-    /**
-     * @dev Returns whether an operation is ready for execution. Note that a "ready" operation is also "pending".
-     */
+    /// @dev Return whether an operation is ready for execution. A ready operation is also pending.
     function isOperationReady(bytes32 id) public view returns (bool) {
         return getOperationState(id) == OperationState.Ready;
     }
 
-    /**
-     * @dev Returns whether an operation is done or not.
-     */
+    /// @dev Return whether an operation is done.
     function isOperationDone(bytes32 id) public view returns (bool) {
         return getOperationState(id) == OperationState.Done;
     }
 
-    /**
-     * @dev Returns the timestamp at which an operation becomes ready (0 for
-     * unset operations, 1 for done operations).
-     */
+    /// @dev Return the timestamp at which an operation becomes ready: `0` for unset operations and `1` for done operations.
     function getTimestamp(bytes32 id) public view virtual returns (uint256) {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         return $._timestamps[id];
     }
 
-    /**
-     * @dev Returns operation state.
-     */
+    /// @dev Return the current operation state.
     function getOperationState(bytes32 id) public view virtual returns (OperationState) {
         uint256 timestamp = getTimestamp(id);
         if (timestamp == 0) {
@@ -241,20 +184,14 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         }
     }
 
-    /**
-     * @dev Returns the minimum delay in seconds for an operation to become valid.
-     *
-     * This value can be changed by executing an operation that calls `updateDelay`.
-     */
+    /// @dev Return the minimum delay in seconds for an operation to become valid.
+    /// This value can be changed only through a scheduled `updateDelay` call.
     function getMinDelay() public view virtual returns (uint256) {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         return $._minDelay;
     }
 
-    /**
-     * @dev Returns the identifier of an operation containing a single
-     * transaction.
-     */
+    /// @dev Return the identifier of an operation containing a single transaction.
     function hashOperation(
         address target,
         uint256 value,
@@ -265,10 +202,7 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         return keccak256(abi.encode(target, value, data, predecessor, salt));
     }
 
-    /**
-     * @dev Returns the identifier of an operation containing a batch of
-     * transactions.
-     */
+    /// @dev Return the identifier of an operation containing a batch of transactions.
     function hashOperationBatch(
         address[] calldata targets,
         uint256[] calldata values,
@@ -279,15 +213,9 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         return keccak256(abi.encode(targets, values, payloads, predecessor, salt));
     }
 
-    /**
-     * @dev Schedule an operation containing a single transaction.
-     *
-     * Emits {CallSalt} if salt is nonzero, and {CallScheduled}.
-     *
-     * Requirements:
-     *
-     * - the caller must have the 'proposer' role.
-     */
+    /// @dev Schedule an operation containing a single transaction.
+    /// Emits `CallSalt` when `salt` is non-zero and always emits `CallScheduled`.
+    /// Requires the caller to hold PROPOSER_ROLE.
     function schedule(
         address target,
         uint256 value,
@@ -304,15 +232,9 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         }
     }
 
-    /**
-     * @dev Schedule an operation containing a batch of transactions.
-     *
-     * Emits {CallSalt} if salt is nonzero, and one {CallScheduled} event per transaction in the batch.
-     *
-     * Requirements:
-     *
-     * - the caller must have the 'proposer' role.
-     */
+    /// @dev Schedule an operation containing a batch of transactions.
+    /// Emits `CallSalt` when `salt` is non-zero and emits one `CallScheduled` event per batch item.
+    /// Requires the caller to hold PROPOSER_ROLE.
     function scheduleBatch(
         address[] calldata targets,
         uint256[] calldata values,
@@ -335,9 +257,7 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         }
     }
 
-    /**
-     * @dev Schedule an operation that is to become valid after a given delay.
-     */
+    /// @dev Schedule an operation that becomes valid after a given delay.
     function _schedule(bytes32 id, uint256 delay) private {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         if (isOperation(id)) {
@@ -350,13 +270,8 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         $._timestamps[id] = block.timestamp + delay;
     }
 
-    /**
-     * @dev Cancel an operation.
-     *
-     * Requirements:
-     *
-     * - the caller must have the 'canceller' role.
-     */
+    /// @dev Cancel an operation.
+    /// Requires the caller to hold CANCELLER_ROLE.
     function cancel(bytes32 id) public virtual onlyRole(CANCELLER_ROLE) {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         if (!isOperationPending(id)) {
@@ -370,15 +285,8 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         emit Cancelled(id);
     }
 
-    /**
-     * @dev Execute an (ready) operation containing a single transaction.
-     *
-     * Emits a {CallExecuted} event.
-     *
-     * Requirements:
-     *
-     * - the caller must have the 'executor' role.
-     */
+    /// @dev Execute a ready operation containing a single transaction.
+    /// Emits `CallExecuted` and requires the caller to hold EXECUTOR_ROLE or for the executor role to be open.
     // This function can reenter, but it doesn't pose a risk because _afterCall checks that the proposal is pending,
     // thus any modifications to the operation during reentrancy should be caught.
     // slither-disable-next-line reentrancy-eth
@@ -397,15 +305,8 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         _afterCall(id);
     }
 
-    /**
-     * @dev Execute an (ready) operation containing a batch of transactions.
-     *
-     * Emits one {CallExecuted} event per transaction in the batch.
-     *
-     * Requirements:
-     *
-     * - the caller must have the 'executor' role.
-     */
+    /// @dev Execute a ready operation containing a batch of transactions.
+    /// Emits one `CallExecuted` event per transaction and requires the caller to hold EXECUTOR_ROLE or for the executor role to be open.
     // This function can reenter, but it doesn't pose a risk because _afterCall checks that the proposal is pending,
     // thus any modifications to the operation during reentrancy should be caught.
     // slither-disable-next-line reentrancy-eth
@@ -433,17 +334,13 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         _afterCall(id);
     }
 
-    /**
-     * @dev Execute an operation's call.
-     */
+    /// @dev Execute a single scheduled call.
     function _execute(address target, uint256 value, bytes calldata data) internal virtual {
         (bool success, bytes memory returndata) = target.call{value: value}(data);
         Address.verifyCallResult(success, returndata);
     }
 
-    /**
-     * @dev Checks before execution of an operation's calls.
-     */
+    /// @dev Run pre-execution checks for an operation.
     function _beforeCall(bytes32 id, bytes32 predecessor) private view {
         if (!isOperationReady(id)) {
             revert TimelockUnexpectedOperationState(id, _encodeStateBitmap(OperationState.Ready));
@@ -453,9 +350,7 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         }
     }
 
-    /**
-     * @dev Checks after execution of an operation's calls.
-     */
+    /// @dev Run post-execution checks for an operation and mark it as done.
     function _afterCall(bytes32 id) private {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         if (!isOperationReady(id)) {
@@ -464,16 +359,9 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         $._timestamps[id] = _DONE_TIMESTAMP;
     }
 
-    /**
-     * @dev Changes the minimum timelock duration for future operations.
-     *
-     * Emits a {MinDelayChange} event.
-     *
-     * Requirements:
-     *
-     * - the caller must be the timelock itself. This can only be achieved by scheduling and later executing
-     * an operation where the timelock is the target and the data is the ABI-encoded call to this function.
-     */
+    /// @dev Change the minimum timelock duration for future operations.
+    /// Emits `MinDelayChange`.
+    /// The caller must be the timelock itself, which means this function can only be reached through a scheduled self-call.
     function updateDelay(uint256 newDelay) external virtual {
         TimelockControllerStorage storage $ = _getTimelockControllerStorage();
         address sender = _msgSender();
@@ -484,17 +372,7 @@ contract TimelockControllerUpgradeable is Initializable, AccessControlUpgradeabl
         $._minDelay = newDelay;
     }
 
-    /**
-     * @dev Encodes a `OperationState` into a `bytes32` representation where each bit enabled corresponds to
-     * the underlying position in the `OperationState` enum. For example:
-     *
-     * 0x000...1000
-     *   ^^^^^^----- ...
-     *         ^---- Done
-     *          ^--- Ready
-     *           ^-- Waiting
-     *            ^- Unset
-     */
+    /// @dev Encode an `OperationState` into a `bytes32` bitmap with the enum position bit enabled.
     function _encodeStateBitmap(OperationState operationState) internal pure returns (bytes32) {
         return bytes32(1 << uint8(operationState));
     }

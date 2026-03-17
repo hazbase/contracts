@@ -13,42 +13,14 @@ pragma solidity ^0.8.28;
 import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
-import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
-import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
-import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
+import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {IEntryPoint} from "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
+import {IOwnerValidator} from "./interfaces/IOwnerValidator.sol";
 
-/**
- * @title SmartAccount
- *
- * @notice
- * - Purpose: Minimal, upgradeable **Account Abstraction** (ERC-4337–style) smart-account
- *   with owner EOA, optional guardian-based recovery, limited-lifespan **session keys**,
- *   execution helpers (call/batch/delegatecall with whitelist), and UUPS upgrades governed by `safe`.
- *
- * - Feature highlights:
- *   * **ERC-4337** validation via `validateUserOp`/_validateSignature (owner or session key).
- *   * **Guardian recovery**: 2-step owner rotation with time delay (two-of-N attestation enforced off-chain).
- *   * **Session keys**: TTL, per-key call quotas, and selector mask gating.
- *   * **Delegatecall whitelist** for extension modules (mitigates arbitrary delegatecall risk).
- *   * **UUPS** upgradeable; upgrade authority gated by `safe`.
- *   * **Pausable**; execution paths are blocked when paused.
- *
- * @dev SECURITY / AUDIT NOTES
- * - Signature scheme: userOp signature is verified over `eth_sign` style (toEthSignedMessageHash(userOpHash));
- *   adjust if switching to EIP-712 at the bundler layer.
- * - Session key selector mask: `(selector & mask) == selector` allows grouping permitted selectors by mask.
- * - Delegatecall: only targets whitelisted via `whitelistImpl`; whitelist governance is `onlySafe`.
- * - Reentrancy: execution functions are `nonReentrant`. External calls are performed after gating checks.
- * - Funds: `validateUserOp` forwards missing funds to EntryPoint using a raw call; verify EntryPoint assumptions.
- */
-
-/*────────────────────────── UserOperation (local mirror) ─────────────────────────*/
-/**
- * @dev Minimal local mirror of ERC-4337 UserOperation for signature validation.
- */
 struct UserOperation {
     address sender;
     uint256 nonce;
@@ -63,7 +35,22 @@ struct UserOperation {
     bytes signature;
 }
 
-/*────────────────────────── Smart-Account Logic ─────────────────────────*/
+/**
+ * @title SmartAccount
+ *
+ * @notice
+ * - Purpose: upgradeable ERC-4337 smart account with passkey-validator owner,
+ *   threshold guardian recovery, capability-scoped session keys, and allowlisted delegatecall extensions.
+ * - Owner operations are validated via `ownerValidator + ownerConfigHash`.
+ * - Session keys remain intended for short-lived, first-party `L1-L2` actions with on-chain
+ *   target/selector/value/batch constraints.
+ *
+ * @dev
+ * - Owner calls are expected to route through `execute(address(this), ...)` so that account
+ *   management remains self-authorized rather than `msg.sender == owner` authorized.
+ * - Session targets must be approved by both the account owner flow and the `safe` role.
+ * - `executeDelegate` remains unavailable to session keys.
+ */
 contract SmartAccount is
     Initializable,
     UUPSUpgradeable,
@@ -72,305 +59,535 @@ contract SmartAccount is
 {
     using EnumerableSet for EnumerableSet.AddressSet;
 
-    /// @dev Constant returned to EntryPoint when signature verification fails.
+    /// @dev ERC-4337 validation failure sentinel used by the EntryPoint flow.
     uint256 internal constant SIG_VALIDATION_FAILED = 1;
+    /// @dev Signature envelope type for owner-scoped operations validated via `ownerValidator`.
+    uint256 internal constant SIG_TYPE_OWNER = 0;
+    /// @dev Signature envelope type for short-lived session-key operations.
+    uint256 internal constant SIG_TYPE_SESSION = 1;
 
-    /*────────────────────────── State ─────────────────────────*/
-
-    /// @notice EOA that controls the account (direct signer validation).
-    address public owner;
-
-    /// @notice Gnosis Safe (or similar) that governs upgrades / admin-only operations.
-    address public safe;
-
-    /// @dev EntryPoint used for ERC-4337 flows.
-    IEntryPoint private _entryPoint;
-
-    // ── Guardian recovery (two-step with delay) ──
-    EnumerableSet.AddressSet private _guardians;
-    uint256 public guardianChangeAfter;  // when the pending owner can accept
-    address public pendingOwner;
+    /// @notice Mandatory delay between guardian recovery proposal and acceptance.
     uint256 public constant RECOVERY_DELAY = 2 days;
 
-    // ── Session key structure ──
-    /**
-     * @dev Session key controlling limited capability.
-     * - `validUntil`   : epoch timestamp; 0 means disabled.
-     * - `callLimit`    : max calls allowed.
-     * - `usedCalls`    : calls already consumed (auto-revokes on reaching limit).
-     * - `selectorMask` : bitmask to gate allowed function selectors (sel & mask == sel).
-     */
-    struct Session {
-        uint64  validUntil;
-        uint64  callLimit;
-        uint64  usedCalls;
-        bytes4  selectorMask;
-    }
-    /// @notice Mapping of session keys to session data.
-    mapping(address => Session) public sessionKeys;
+    /// @notice Validator contract responsible for proving owner-scoped operations.
+    address public ownerValidator;
+    /// @notice Commitment to the validator-specific owner configuration for the current owner.
+    bytes32 public ownerConfigHash;
+    /// @notice Operational safe allowed to manage emergency and session-safe policy controls.
+    address public safe;
+    IEntryPoint private _entryPoint;
 
-    /// @notice Delegatecall whitelist (impl address => allowed?).
+    EnumerableSet.AddressSet private _guardians;
+    /// @notice Guardian approvals required before a pending recovery can be accepted.
+    uint256 public recoveryThreshold;
+    /// @notice Monotonic identifier for recovery attempts; used to prevent replay across guardian-set changes.
+    uint256 public recoveryNonce;
+
+    /// @notice Pending owner rotation proposed through guardian recovery.
+    /// @dev Recovery is expressed in validator/config-hash terms so the account can move between owner schemes
+    /// without assuming the owner is always a plain address.
+    struct RecoveryRequest {
+        address pendingOwnerValidator;
+        bytes32 pendingOwnerConfigHash;
+        uint64 executeAfter;
+        uint32 approvals;
+        uint64 nonce;
+        bool active;
+    }
+
+    RecoveryRequest public recoveryRequest;
+    mapping(uint256 => mapping(address => bool)) private _recoveryApprovals;
+
+    /// @notice Short-lived capability grant for first-party `L1-L2` session actions.
+    /// @dev Session permissions are intentionally coarse at the key level and fine-grained through
+    /// target/selector allowlists plus value/batch constraints stored in separate mappings.
+    struct SessionConfig {
+        uint64 validUntil;
+        uint64 callLimit;
+        uint64 usedCalls;
+        uint64 version;
+        uint64 maxBatchCalls;
+        uint128 maxValuePerCall;
+        uint128 maxTotalValuePerUserOp;
+        bool allowBatch;
+    }
+
+    mapping(address => SessionConfig) public sessionConfigs;
+    mapping(address => uint64) private _sessionVersions;
+    mapping(address => mapping(uint64 => mapping(address => bool))) private _sessionTargets;
+    mapping(address => mapping(uint64 => mapping(address => mapping(bytes4 => bool)))) private _sessionSelectors;
+
+    mapping(address => bool) public isSessionSafeTarget;
     mapping(address => bool) public isWhitelistedImpl;
 
-    /*────────────────────────── Events ───────────────────────*/
-
-    event OwnerChangeRequested(address indexed newOwner, uint256 executeAfter);
-    event OwnerChanged(address indexed newOwner);
-    event GuardianAdded(address indexed g);
-    event GuardianRemoved(address indexed g);
-    event SessionKeyAdded(address indexed k, Session s);
-    event SessionKeyRevoked(address indexed k);
+    event OwnerConfigUpdated(address indexed validator, bytes32 indexed ownerConfigHash);
+    event GuardianAdded(address indexed guardian);
+    event GuardianRemoved(address indexed guardian);
+    event GuardianThresholdUpdated(uint256 threshold);
+    event RecoveryProposed(address indexed guardian, address indexed validator, bytes32 indexed ownerConfigHash, uint256 executeAfter, uint256 nonce);
+    event RecoveryApproved(address indexed guardian, address indexed validator, bytes32 indexed ownerConfigHash, uint256 approvals, uint256 nonce);
+    event RecoveryCancelled(uint256 nonce);
+    event SessionKeyGranted(address indexed key, SessionConfig config);
+    event SessionKeyRevoked(address indexed key, uint64 version);
+    event SessionTargetSet(address indexed key, uint64 indexed version, address indexed target, bool allowed);
+    event SessionSelectorSet(address indexed key, uint64 indexed version, address indexed target, bytes4 selector, bool allowed);
+    event SessionSafeTargetSet(address indexed target, bool allowed);
     event ImplWhitelisted(address indexed impl, bool allowed);
 
-    /*────────────────────────── Initializer ───────────────────*/
-
-    /**
-     * @notice Initialize the SmartAccount.
-     * @param _owner  EOA that controls the account.
-     * @param _entry  EntryPoint address used for ERC-4337 flows.
-     * @param _safe   Admin authority (governs upgrades/pausing/whitelisting via onlySafe).
-     *
-     * @dev Sets owner/safe/entryPoint; initializes UUPS, ReentrancyGuard, and Pausable.
-     *
-     * @custom:reverts zero if `_owner == 0` or `_safe == 0`
-     */
-    function initialize(address _owner, address _entry, address _safe) external initializer {
-        require(_owner != address(0) && _safe != address(0), "zero");
+    /// @notice Initializes a freshly cloned account with validator-based ownership.
+    /// @dev This function is intended to be called exactly once by the factory during clone creation.
+    /// The owner config stays opaque to the account itself; only the validator decides how it is hashed.
+    /// @param _ownerValidator Validator used for owner-scoped user operations and ERC-1271 checks.
+    /// @param _ownerConfig Validator-specific owner configuration bytes.
+    /// @param _entry ERC-4337 EntryPoint used by this account.
+    /// @param _safe Operational safe that can manage emergency controls and session-safe targets.
+    function initialize(address _ownerValidator, bytes calldata _ownerConfig, address _entry, address _safe) external initializer {
+        require(_ownerValidator != address(0) && _safe != address(0), "zero");
+        require(_ownerConfig.length > 0, "owner-config0");
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         __Pausable_init();
-        owner = _owner;
-        safe  = _safe;
+
+        ownerValidator = _ownerValidator;
+        ownerConfigHash = IOwnerValidator(_ownerValidator).configHash(_ownerConfig);
+        safe = _safe;
         _entryPoint = IEntryPoint(_entry);
+        recoveryThreshold = 2;
+
+        emit GuardianThresholdUpdated(2);
+        emit OwnerConfigUpdated(_ownerValidator, ownerConfigHash);
     }
 
-    /*────────────────────────── Modifiers ─────────────────────*/
+    modifier onlySafe() {
+        require(msg.sender == safe, "not-safe");
+        _;
+    }
 
-    /// @notice Restrict to owner EOA.
-    modifier onlyOwner()    { require(msg.sender == owner, "not-owner"); _; }
-    /// @notice Restrict to admin `safe`.
-    modifier onlySafe()     { require(msg.sender == safe,  "not-safe");  _; }
-    /// @notice Restrict to EntryPoint context in ERC-4337 flow.
+    modifier onlySelf() {
+        require(msg.sender == address(this), "not-self");
+        _;
+    }
+
+    modifier onlySelfOrSafe() {
+        require(msg.sender == address(this) || msg.sender == safe, "not-self-safe");
+        _;
+    }
+
+    modifier onlyGuardian() {
+        require(_guardians.contains(msg.sender), "not-guardian");
+        _;
+    }
+
     modifier onlyEntryPoint() {
         require(msg.sender == address(_entryPoint), "not-ep");
         _;
     }
 
-    /*────────────────────────── EntryPoint view ───────────────*/
-
-    /**
-     * @notice Expose the configured EntryPoint for AA SDKs.
-     * @return IEntryPoint Current EntryPoint instance.
-     */
-    function entryPoint() external view returns (IEntryPoint) { return _entryPoint; }
-
-    /*────────────────────────── Guardian Recovery ─────────────*/
-
-    /**
-     * @notice Add a guardian address.
-     * @param g Guardian address to add.
-     *
-     * @dev Only owner. Emits `GuardianAdded`.
-     */
-    function addGuardian(address g) external onlyOwner { _guardians.add(g); emit GuardianAdded(g);}    
-
-    /**
-     * @notice Remove a guardian address.
-     * @param g Guardian address to remove.
-     *
-     * @dev Only owner. Emits `GuardianRemoved`.
-     */
-    function removeGuardian(address g) external onlyOwner { _guardians.remove(g); emit GuardianRemoved(g);}    
-
-    /**
-     * @notice Guardians propose a new owner (off-chain two-of-N validation recommended).
-     * @param newOwner Candidate owner address (non-zero).
-     *
-     * @dev
-     * - Must be called by a registered guardian.
-     * - Starts the recovery delay (`RECOVERY_DELAY`) after which the `pendingOwner` may accept.
-     * - Emits `OwnerChangeRequested`.
-     *
-     * @custom:reverts owner-0  if `newOwner == 0`
-     * @custom:reverts not-guardian if caller is not registered
-     * @custom:reverts pending  if there is already a pending change
-     */
-    function proposeOwner(address newOwner) external {
-        require(newOwner!=address(0),"owner-0");
-        require(_guardians.contains(msg.sender), "not-guardian");
-        require(guardianChangeAfter == 0, "pending");
-
-        pendingOwner = newOwner;
-        guardianChangeAfter = block.timestamp + RECOVERY_DELAY;
-        emit OwnerChangeRequested(newOwner, guardianChangeAfter);
+    /// @notice Returns the configured ERC-4337 EntryPoint.
+    function entryPoint() external view returns (IEntryPoint) {
+        return _entryPoint;
     }
 
-    /**
-     * @notice Accept pending ownership after the delay window.
-     *
-     * @dev Only the `pendingOwner` can accept. Resets pending state and emits `OwnerChanged`.
-     *
-     * @custom:reverts delay        if now < `guardianChangeAfter` or none pending
-     * @custom:reverts not-pending  if caller is not `pendingOwner`
-     */
-    function acceptOwner() external {
-        require(block.timestamp >= guardianChangeAfter && guardianChangeAfter!=0, "delay");
-        require(msg.sender == pendingOwner, "not-pending");
-        owner = pendingOwner;
-        pendingOwner = address(0);
-        guardianChangeAfter = 0;
-        emit OwnerChanged(owner);
+    /// @notice Rotates account ownership to a new validator/config pair.
+    /// @dev Must be executed through `execute(address(this), ...)` with a valid owner authorization payload.
+    /// This path also cancels any in-flight recovery so stale guardian approvals cannot switch the account later.
+    function rotateOwner(address newOwnerValidator, bytes calldata newOwnerConfig) external onlySelf {
+        _setOwnerConfig(newOwnerValidator, newOwnerConfig);
+        _resetRecovery(true);
     }
 
-    /*────────────────────────── Session Keys ──────────────────*/
-
-    /**
-     * @notice Add or refresh a session key.
-     * @param k            Session key address.
-     * @param ttl          Time-to-live in seconds (from now).
-     * @param callLimit    Max number of calls allowed for this key (>0).
-     * @param selectorMask Bitmask of allowed selectors (sel & mask == sel).
-     *
-     * @dev Only owner. Emits `SessionKeyAdded`.
-     *
-     * @custom:reverts limit0 if `callLimit == 0`
-     * @custom:reverts ttl-ov if `block.timestamp + ttl` overflows uint64
-     */
-    function addSessionKey(address k, uint64 ttl, uint64 callLimit, bytes4 selectorMask) external onlyOwner {
-        require(callLimit > 0, "limit0");
-        require(ttl <= type(uint64).max - block.timestamp, "ttl-ov");
-        sessionKeys[k] = Session(uint64(block.timestamp)+ttl, callLimit, 0, selectorMask);
-        emit SessionKeyAdded(k, sessionKeys[k]);
+    /// @notice Adds a guardian that may participate in threshold recovery.
+    /// @dev Changing the guardian set invalidates any active recovery request.
+    function addGuardian(address guardian) external onlySelf {
+        require(guardian != address(0), "guardian0");
+        _guardians.add(guardian);
+        _resetRecovery(true);
+        emit GuardianAdded(guardian);
     }
 
-    /**
-     * @notice Revoke a session key immediately.
-     * @param k Session key address to revoke.
-     *
-     * @dev Only owner. Emits `SessionKeyRevoked`.
-     */
-    function revokeSessionKey(address k) external onlyOwner {
-        delete sessionKeys[k];
-        emit SessionKeyRevoked(k);
+    /// @notice Removes a guardian from the recovery set.
+    /// @dev Changing the guardian set invalidates any active recovery request.
+    function removeGuardian(address guardian) external onlySelf {
+        _guardians.remove(guardian);
+        _resetRecovery(true);
+        emit GuardianRemoved(guardian);
     }
 
-    /*────────────────────────── ERC-4337 Validation ───────────*/
+    /// @notice Sets the number of guardian approvals required for recovery acceptance.
+    /// @dev The minimum threshold is `2` so a single compromised guardian cannot take over the account.
+    function setGuardianThreshold(uint256 threshold) external onlySelf {
+        require(threshold >= 2, "threshold<2");
+        recoveryThreshold = threshold;
+        _resetRecovery(true);
+        emit GuardianThresholdUpdated(threshold);
+    }
 
-    /**
-     * @notice Internal signer validation for ERC-4337 flow (owner or an active session key).
-     * @param userOp     The incoming UserOperation (signature is `(ownerSig, reserved)` ABI-encoded).
-     * @param userOpHash Hash computed by the EntryPoint for this userOp.
-     * @return validationData 0 if owner signature; else packed `validUntil<<160` for session key;
-     *                        or `SIG_VALIDATION_FAILED (1)` on failure.
-     *
-     * @dev
-     * - Owner path: verify `sigOwner` over `toEthSignedMessageHash(userOpHash)`.
-     * - Session path: check TTL, call quota, and `selectorMask`. On final allowed call, auto-revoke.
-     * - NOTE: Signature layout is `(bytes sigOwner, bytes reserved)` to allow future extensibility.
-     *
-     * @custom:reverts cd<4  if `userOp.callData` is shorter than 4-byte selector
-     * @custom:reverts sig<96 if `userOp.signature` is too short to contain `(r,s,v)`-style bytes
-     */
+    /// @notice Starts a guardian recovery flow toward a new validator/config commitment.
+    /// @dev The proposer automatically counts as the first approval. Recovery is blocked unless the
+    /// current guardian set is large enough to satisfy the configured threshold.
+    function proposeRecovery(address newOwnerValidator, bytes32 newOwnerConfigHash) external onlyGuardian {
+        require(newOwnerValidator != address(0), "validator0");
+        require(newOwnerConfigHash != bytes32(0), "config0");
+        require(!recoveryRequest.active, "recovery-active");
+        require(_guardians.length() >= recoveryThreshold, "guardians<threshold");
+
+        uint256 nextNonce = recoveryNonce + 1;
+        recoveryNonce = nextNonce;
+        _recoveryApprovals[nextNonce][msg.sender] = true;
+        recoveryRequest = RecoveryRequest({
+            pendingOwnerValidator: newOwnerValidator,
+            pendingOwnerConfigHash: newOwnerConfigHash,
+            executeAfter: uint64(block.timestamp + RECOVERY_DELAY),
+            approvals: 1,
+            nonce: uint64(nextNonce),
+            active: true
+        });
+
+        emit RecoveryProposed(msg.sender, newOwnerValidator, newOwnerConfigHash, block.timestamp + RECOVERY_DELAY, nextNonce);
+        emit RecoveryApproved(msg.sender, newOwnerValidator, newOwnerConfigHash, 1, nextNonce);
+    }
+
+    /// @notice Adds a guardian approval to the currently active recovery request.
+    /// @dev Guardians approve the exact `(validator, configHash)` pair stored in the request.
+    function approveRecovery(address newOwnerValidator, bytes32 newOwnerConfigHash) external onlyGuardian {
+        RecoveryRequest storage request = recoveryRequest;
+        require(request.active, "recovery-inactive");
+        require(request.pendingOwnerValidator == newOwnerValidator, "recovery-validator");
+        require(request.pendingOwnerConfigHash == newOwnerConfigHash, "recovery-config");
+        require(!_recoveryApprovals[request.nonce][msg.sender], "recovery-approved");
+
+        _recoveryApprovals[request.nonce][msg.sender] = true;
+        unchecked {
+            ++request.approvals;
+        }
+
+        emit RecoveryApproved(msg.sender, newOwnerValidator, newOwnerConfigHash, request.approvals, request.nonce);
+    }
+
+    /// @notice Cancels the current recovery flow through an owner-authorized self-call.
+    function cancelRecovery() external onlySelf {
+        _resetRecovery(true);
+    }
+
+    /// @notice Allows the operational safe to cancel a recovery flow in an emergency.
+    function cancelRecoveryBySafe() external onlySafe {
+        _resetRecovery(true);
+    }
+
+    /// @notice Finalizes guardian recovery after enough approvals and the delay window have passed.
+    /// @dev The caller supplies the full new owner config so the account can recompute and verify the
+    /// committed hash before switching ownership.
+    function acceptRecovery(address newOwnerValidator, bytes calldata newOwnerConfig) external {
+        RecoveryRequest memory request = recoveryRequest;
+        require(request.active, "recovery-inactive");
+        require(request.pendingOwnerValidator == newOwnerValidator, "recovery-validator");
+        require(uint256(request.approvals) >= recoveryThreshold, "recovery-threshold");
+        require(block.timestamp >= uint256(request.executeAfter), "delay");
+        require(IOwnerValidator(newOwnerValidator).configHash(newOwnerConfig) == request.pendingOwnerConfigHash, "recovery-config-hash");
+
+        ownerValidator = newOwnerValidator;
+        ownerConfigHash = request.pendingOwnerConfigHash;
+        _resetRecovery(false);
+        emit OwnerConfigUpdated(newOwnerValidator, ownerConfigHash);
+    }
+
+    /// @notice Grants or refreshes a session key for low-risk first-party actions.
+    /// @dev A session grant by itself is not enough to execute calls. The key must also be configured
+    /// with allowed targets/selectors, and every target must be safe-approved by the `safe` role.
+    /// Re-granting the same key increments its version so stale allowlists from an older grant are ignored.
+    function grantSessionKey(address key, SessionConfig calldata config) external onlySelf {
+        require(key != address(0), "key0");
+        require(config.callLimit > 0, "limit0");
+        require(config.validUntil > block.timestamp, "expired");
+        require(config.maxTotalValuePerUserOp >= config.maxValuePerCall, "value-range");
+        if (config.allowBatch) {
+            require(config.maxBatchCalls > 0, "batch0");
+        }
+
+        uint64 nextVersion = _sessionVersions[key] + 1;
+        _sessionVersions[key] = nextVersion;
+        sessionConfigs[key] = SessionConfig({
+            validUntil: config.validUntil,
+            callLimit: config.callLimit,
+            usedCalls: 0,
+            version: nextVersion,
+            maxBatchCalls: config.allowBatch ? config.maxBatchCalls : 0,
+            maxValuePerCall: config.maxValuePerCall,
+            maxTotalValuePerUserOp: config.maxTotalValuePerUserOp,
+            allowBatch: config.allowBatch
+        });
+
+        emit SessionKeyGranted(key, sessionConfigs[key]);
+    }
+
+    /// @notice Marks a target as callable by the current version of a given session key.
+    /// @dev The target must still be `safe`-approved through `whitelistSessionTarget(...)` before
+    /// session validation will allow execution.
+    function setSessionTarget(address key, address target, bool allowed) external onlySelf {
+        SessionConfig storage config = sessionConfigs[key];
+        require(config.version != 0 && config.validUntil != 0, "session-missing");
+        require(target != address(0), "target0");
+        _sessionTargets[key][config.version][target] = allowed;
+        emit SessionTargetSet(key, config.version, target, allowed);
+    }
+
+    /// @notice Marks a selector as callable for a specific target under the current session-key version.
+    function setSessionSelector(address key, address target, bytes4 selector, bool allowed) external onlySelf {
+        SessionConfig storage config = sessionConfigs[key];
+        require(config.version != 0 && config.validUntil != 0, "session-missing");
+        require(target != address(0), "target0");
+        _sessionSelectors[key][config.version][target][selector] = allowed;
+        emit SessionSelectorSet(key, config.version, target, selector, allowed);
+    }
+
+    /// @notice Adds or removes a target from the global session-safe allowlist managed by the operational safe.
+    /// @dev Session execution requires both account-owner approval (`setSessionTarget`) and safe approval here.
+    function whitelistSessionTarget(address target, bool allowed) external onlySafe {
+        require(target != address(0), "target0");
+        isSessionSafeTarget[target] = allowed;
+        emit SessionSafeTargetSet(target, allowed);
+    }
+
+    /// @notice Revokes a session key immediately.
+    function revokeSessionKey(address key) public onlySelf {
+        _revokeSessionKey(key);
+    }
+
+    /// @notice Returns the current version number for a session key.
+    /// @dev Versioning prevents stale target/selector grants from surviving a re-grant or revoke/recreate cycle.
+    function sessionVersion(address key) external view returns (uint64) {
+        return _sessionVersions[key];
+    }
+
+    /// @notice Returns whether the current session-key version is allowed to call the target.
+    function isSessionTargetAllowed(address key, address target) external view returns (bool) {
+        SessionConfig storage config = sessionConfigs[key];
+        return _sessionTargets[key][config.version][target];
+    }
+
+    /// @notice Returns whether the current session-key version is allowed to call the selector on the target.
+    function isSessionSelectorAllowed(address key, address target, bytes4 selector) external view returns (bool) {
+        SessionConfig storage config = sessionConfigs[key];
+        return _sessionSelectors[key][config.version][target][selector];
+    }
+
+    /// @notice Returns the number of currently configured guardians.
+    function guardianCount() external view returns (uint256) {
+        return _guardians.length();
+    }
+
+    /// @notice Returns whether the address is an active guardian.
+    function isGuardian(address guardian) external view returns (bool) {
+        return _guardians.contains(guardian);
+    }
+
+    /// @notice Allows the operational safe to approve delegatecall extensions for owner-scoped flows.
+    /// @dev Session keys can never use `executeDelegate`, so this allowlist only affects owner-authorized operations.
+    function whitelistImpl(address impl, bool allowed) external onlySafe {
+        isWhitelistedImpl[impl] = allowed;
+        emit ImplWhitelisted(impl, allowed);
+    }
+
+    /// @notice Pauses account execution and ETH reception.
+    function pause() external onlySelfOrSafe {
+        _pause();
+    }
+
+    /// @notice Resumes account execution and ETH reception.
+    function unpause() external onlySelfOrSafe {
+        _unpause();
+    }
+
+    /// @dev Recomputes and stores the validator-specific owner config hash for a new owner configuration.
+    function _setOwnerConfig(address newOwnerValidator, bytes calldata newOwnerConfig) internal {
+        require(newOwnerValidator != address(0), "validator0");
+        require(newOwnerConfig.length > 0, "owner-config0");
+        ownerValidator = newOwnerValidator;
+        ownerConfigHash = IOwnerValidator(newOwnerValidator).configHash(newOwnerConfig);
+        emit OwnerConfigUpdated(newOwnerValidator, ownerConfigHash);
+    }
+
+    /// @dev Revocation deletes only the current session config. Old allowlists remain versioned and unreachable.
+    function _revokeSessionKey(address key) internal {
+        uint64 version = sessionConfigs[key].version;
+        delete sessionConfigs[key];
+        emit SessionKeyRevoked(key, version);
+    }
+
+    /// @dev Recovery state is cleared whenever ownership, guardians, or thresholds change so stale approvals cannot be replayed.
+    function _resetRecovery(bool emitCancellation) internal {
+        RecoveryRequest memory request = recoveryRequest;
+        if (request.active && emitCancellation) {
+            emit RecoveryCancelled(request.nonce);
+        }
+        delete recoveryRequest;
+    }
+
+    /// @dev Splits an `execute*` call into its outer selector plus ABI-encoded payload for session validation.
+    function _validationPayload(bytes calldata callData)
+        internal
+        pure
+        returns (bytes4 outerSelector, bytes calldata payload)
+    {
+        require(callData.length >= 4, "cd<4");
+        outerSelector = bytes4(callData);
+        payload = callData[4:];
+    }
+
+    function _readSelector(bytes memory data) internal pure returns (bytes4 selector) {
+        if (data.length < 4) return bytes4(0);
+        assembly {
+            selector := mload(add(data, 32))
+        }
+    }
+
+    /// @dev Validates a single `execute(...)` call against the current session policy.
+    function _validateExecute(
+        SessionConfig storage config,
+        address signer,
+        bytes calldata payload
+    ) internal view returns (bool) {
+        (address target, uint256 value, bytes memory data) = abi.decode(payload, (address, uint256, bytes));
+        return _validateInnerCall(config, signer, target, value, data);
+    }
+
+    /// @dev Validates a batched call against per-call limits and a per-userOp aggregate value limit.
+    function _validateExecuteBatch(
+        SessionConfig storage config,
+        address signer,
+        bytes calldata payload
+    ) internal view returns (bool) {
+        if (!config.allowBatch) return false;
+
+        (address[] memory targets, uint256[] memory values, bytes[] memory data) =
+            abi.decode(payload, (address[], uint256[], bytes[]));
+        uint256 len = targets.length;
+        if (len != values.length || len != data.length) return false;
+        if (len > uint256(config.maxBatchCalls)) return false;
+
+        uint256 totalValue;
+        for (uint256 i; i < len; ++i) {
+            if (!_validateInnerCall(config, signer, targets[i], values[i], data[i])) {
+                return false;
+            }
+            totalValue += values[i];
+            if (totalValue > uint256(config.maxTotalValuePerUserOp)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @dev Session execution is only allowed when all of these are true:
+    /// the owner granted the target, the safe marked it as globally session-safe, the selector is allowlisted,
+    /// and the per-call value cap is respected.
+    function _validateInnerCall(
+        SessionConfig storage config,
+        address signer,
+        address target,
+        uint256 value,
+        bytes memory data
+    ) internal view returns (bool) {
+        if (!_sessionTargets[signer][config.version][target]) return false;
+        if (!isSessionSafeTarget[target]) return false;
+        if (value > uint256(config.maxValuePerCall)) return false;
+        if (data.length < 4) return false;
+
+        bytes4 innerSelector = _readSelector(data);
+        return _sessionSelectors[signer][config.version][target][innerSelector];
+    }
+
+    function _recoverSessionSigner(bytes32 userOpHash, bytes memory sessionSignature) internal pure returns (address) {
+        return ECDSA.recover(MessageHashUtils.toEthSignedMessageHash(userOpHash), sessionSignature);
+    }
+
+    /// @dev Validates either an owner payload or a session-key payload and returns EntryPoint-style validation data.
+    /// Session-key validation mutates usage counters because call limits are enforced during validation itself.
     function _validateSignature(
         UserOperation calldata userOp,
         bytes32 userOpHash
-    )
-        internal
-        returns (uint256 validationData)
-    {
-        require(userOp.callData.length >= 4, "cd<4");
-        require(userOp.signature.length >= 96, "sig<96");
+    ) internal returns (uint256 validationData) {
+        (uint8 sigType, bytes memory sigPayload) = abi.decode(userOp.signature, (uint8, bytes));
 
-        (bytes memory sigOwner,) = abi.decode(userOp.signature,(bytes,bytes));
-        address signer = ECDSA.recover(
-            MessageHashUtils.toEthSignedMessageHash(userOpHash),
-            sigOwner
-        );
-
-        if (signer == owner) {
-            return 0;
+        if (sigType == SIG_TYPE_OWNER) {
+            bool validOwnerSig =
+                IOwnerValidator(ownerValidator).validateUserOpSignature(address(this), ownerConfigHash, userOpHash, sigPayload);
+            return validOwnerSig ? 0 : SIG_VALIDATION_FAILED;
         }
 
-        Session storage s = sessionKeys[signer];
-
-        bytes4 sel = bytes4(userOp.callData);
-        bool selectorOK = (sel & s.selectorMask) == sel;
-
-        if (
-            s.validUntil   >= block.timestamp &&
-            s.usedCalls    <  s.callLimit &&
-            selectorOK
-        ) {
-            unchecked { ++s.usedCalls; }
-            if (s.usedCalls >= s.callLimit) {
-                delete sessionKeys[signer];
-                emit SessionKeyRevoked(signer);
-            }
-
-            validationData = uint256(s.validUntil) << 160; // pack in OZ/EP format: validUntil in high bits
-            return validationData;
+        if (sigType != SIG_TYPE_SESSION) {
+            return SIG_VALIDATION_FAILED;
         }
 
-        return SIG_VALIDATION_FAILED;
+        address signer = _recoverSessionSigner(userOpHash, sigPayload);
+        SessionConfig storage config = sessionConfigs[signer];
+        if (config.validUntil < block.timestamp || config.usedCalls >= config.callLimit) {
+            return SIG_VALIDATION_FAILED;
+        }
+
+        (bytes4 outerSelector, bytes calldata payload) = _validationPayload(userOp.callData);
+
+        bool allowed;
+        if (outerSelector == this.execute.selector) {
+            allowed = _validateExecute(config, signer, payload);
+        } else if (outerSelector == this.executeBatch.selector) {
+            allowed = _validateExecuteBatch(config, signer, payload);
+        } else {
+            return SIG_VALIDATION_FAILED;
+        }
+
+        if (!allowed) {
+            return SIG_VALIDATION_FAILED;
+        }
+
+        unchecked {
+            ++config.usedCalls;
+        }
+        uint64 validUntil = config.validUntil;
+        if (config.usedCalls >= config.callLimit) {
+            _revokeSessionKey(signer);
+        }
+
+        return uint256(validUntil) << 160;
     }
 
-    /**
-     * @notice ERC-4337 `validateUserOp` entry. Verifies signature and funds EntryPoint if requested.
-     * @param userOp               The UserOperation.
-     * @param userOpHash           Hash computed by EntryPoint.
-     * @param missingAccountFunds  Amount the account should deposit to the EntryPoint.
-     * @return validationData      0 (owner), packed session validity, or `SIG_VALIDATION_FAILED (1)`.
-     *
-     * @dev Only EntryPoint may call. If `missingAccountFunds > 0`, forwards ETH to EntryPoint using a raw call.
-     *
-     * @custom:reverts only entrypoint if caller is not the configured EntryPoint
-     * @custom:reverts deposit fail   if funding transfer to EntryPoint fails
-     */
+    /// @notice EntryPoint hook used to validate owner or session-key authorization for a user operation.
+    /// @dev This function may top up missing account funds to the EntryPoint deposit after validation succeeds.
     function validateUserOp(
         UserOperation calldata userOp,
         bytes32 userOpHash,
         uint256 missingAccountFunds
-    )
-        external
-        returns (uint256 validationData)
-    {
+    ) external returns (uint256 validationData) {
         require(msg.sender == address(_entryPoint), "only entrypoint");
-        
+
         validationData = _validateSignature(userOp, userOpHash);
 
         if (missingAccountFunds > 0) {
-            (bool ok, ) = address(_entryPoint).call{value: missingAccountFunds}("");
+            (bool ok,) = address(_entryPoint).call{value: missingAccountFunds}("");
             require(ok, "deposit fail");
         }
     }
 
-    /*────────────────────────── Execution Helpers ─────────────*/
-
-    /**
-     * @notice Execute a low-level call from the account.
-     * @param to    Target address.
-     * @param value ETH value to send.
-     * @param data  Calldata to forward.
-     *
-     * @dev Only EntryPoint; respects pause & nonReentrancy. Reverts bubbling failure data if any.
-     *
-     * @custom:reverts exec-fail if the external call fails
-     */
-    function execute(address to,uint256 value,bytes calldata data) external onlyEntryPoint whenNotPaused nonReentrant {
-        (bool ok,) = to.call{value:value}(data);
-        require(ok,"exec-fail");
+    /// @notice Executes a single call from the account.
+    /// @dev Only the EntryPoint may call this function. Owner-auth and session-auth decisions are made earlier
+    /// in `validateUserOp`, not at raw call time.
+    function execute(address to, uint256 value, bytes calldata data)
+        external
+        onlyEntryPoint
+        whenNotPaused
+        nonReentrant
+    {
+        (bool ok, bytes memory ret) = to.call{value: value}(data);
+        if (!ok) {
+            assembly {
+                revert(add(ret, 32), mload(ret))
+            }
+        }
     }
 
-    /**
-     * @notice Execute a batch of calls atomically.
-     * @param to     Array of target addresses.
-     * @param values Array of ETH values (one per target).
-     * @param data   Array of calldata blobs (one per target).
-     *
-     * @dev Only EntryPoint; reverts on the first failed call bubbling its returndata.
-     *
-     * @custom:reverts len if array lengths mismatch
-     */
+    /// @notice Executes a batch of calls from the account.
+    /// @dev Session keys can only use this path when their config explicitly enables batching and every
+    /// inner call satisfies the target/selector/value limits checked during validation.
     function executeBatch(
         address[] calldata to,
         uint256[] calldata values,
@@ -389,72 +606,34 @@ contract SmartAccount is
         }
     }
 
-    /**
-     * @notice Execute a whitelisted **delegatecall** against `impl`.
-     * @param impl  Implementation address (must be whitelisted).
-     * @param data  Calldata for the delegatecall.
-     *
-     * @dev Only EntryPoint. Reverts if `impl` is not whitelisted (`isWhitelistedImpl[impl]`).
-     *      Bubbles revert data from the callee.
-     *
-     * @custom:reverts impl-not-allowed if target not whitelisted
-     */
-    function executeDelegate(address impl, bytes calldata data) external onlyEntryPoint whenNotPaused nonReentrant {
-        require(isWhitelistedImpl[impl],"impl-not-allowed");
+    /// @notice Executes an allowlisted delegatecall extension.
+    /// @dev Session keys are never allowed to reach this function. It remains reserved for owner-authorized
+    /// extension flows such as upgrades, modules, or controlled admin-style internal operations.
+    function executeDelegate(address impl, bytes calldata data)
+        external
+        onlyEntryPoint
+        whenNotPaused
+        nonReentrant
+    {
+        require(isWhitelistedImpl[impl], "impl-not-allowed");
         (bool ok, bytes memory ret) = impl.delegatecall(data);
         if (!ok) assembly { revert(add(ret, 32), mload(ret)) }
     }
 
-    /*────────────────────────── Admin (onlySafe) ─────────────*/
+    /// @dev UUPS authorization is restricted to self-calls or the operational safe.
+    function _authorizeUpgrade(address) internal override onlySelfOrSafe onlyProxy {}
 
-    /**
-     * @notice Whitelist or remove a delegatecall target implementation.
-     * @param impl    Implementation address.
-     * @param allowed True to allow delegatecall to `impl`, false to revoke.
-     *
-     * @dev Only `safe`. Emits `ImplWhitelisted`.
-     */
-    function whitelistImpl(address impl,bool allowed) external onlySafe {
-        isWhitelistedImpl[impl]=allowed;
-        emit ImplWhitelisted(impl,allowed);
+    /// @notice ERC-1271 compatibility hook backed by the current owner validator.
+    /// @dev This allows off-chain systems to treat the account like a signature-validating smart wallet
+    /// without knowing the validator-specific owner config format.
+    function isValidSignature(bytes32 hash, bytes memory signature) public view returns (bytes4) {
+        return IOwnerValidator(ownerValidator).isValidSignature(address(this), ownerConfigHash, hash, signature)
+            ? bytes4(0x1626ba7e)
+            : bytes4(0xffffffff);
     }
 
-    /**
-     * @notice Pause execution helpers; only `safe`.
-     */
-    function pause() external onlySafe { _pause(); }
-
-    /**
-     * @notice Unpause execution helpers; only `safe`.
-     */
-    function unpause() external onlySafe { _unpause(); }
-
-    /*────────────────────────── UUPS Upgrade Auth ────────────*/
-
-    /**
-     * @notice Authorize UUPS upgrade; only the `safe` may upgrade, and only via proxy.
-     * @param newImpl Proposed new implementation address.
-     *
-     * @dev Uses OZ `onlyProxy` to disallow direct logic calls; no additional checks here.
-     */
-    function _authorizeUpgrade(address newImpl) internal override onlySafe onlyProxy {}
-
-    /*────────────────────────── ERC-1271 ─────────────────────*/
-
-    /**
-     * @notice ERC-1271 signature validation for off-chain integrations.
-     * @param hash       Message hash.
-     * @param signature  ECDSA signature to verify.
-     * @return bytes4    `0x1626ba7e` on success, `0xffffffff` on failure.
-     *
-     * @dev Validates against `owner` using `toEthSignedMessageHash`.
-     */
-    function isValidSignature(bytes32 hash, bytes memory signature) public view returns (bytes4){
-        return (ECDSA.recover(MessageHashUtils.toEthSignedMessageHash(hash), signature) == owner) ? bytes4(0x1626ba7e) : bytes4(0xffffffff);
+    /// @notice Accepts ETH while the account is not paused.
+    receive() external payable {
+        require(!paused(), "paused");
     }
-
-    /**
-     * @notice Accept ETH deposits (e.g., to fund EntryPoint fees); blocked when paused.
-     */
-    receive() external payable { require(!paused(), "paused"); }
 }

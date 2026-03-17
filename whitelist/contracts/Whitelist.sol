@@ -55,12 +55,12 @@ contract Whitelist is
     RolesCommonUpgradeable,
     PausableUpgradeable
 {
-    /*────────────────── Roles ──────────────────*/
+    // Roles
 
     /// @notice Addresses allowed to rotate Merkle root and invoke zk additions.
     bytes32 public constant VERIFIER_ROLE = keccak256("VERIFIER_ROLE");
 
-    /*────────────────── Enums / Storage ──────────────────*/
+    // Enums and storage
 
     /// @notice KYC trust level.
     enum KYCLevel { None, Basic, ZK }
@@ -80,7 +80,7 @@ contract Whitelist is
     /// @notice Legacy owner field (roles govern behavior).
     address public owner;
 
-    /*────────────────── Events ──────────────────*/
+    // Events
 
     event WhitelistUpdated(address indexed user, KYCLevel level);
     event BatchWhitelistUpdated(uint256 count, KYCLevel level);
@@ -88,22 +88,17 @@ contract Whitelist is
     event VerifierSet(address verifier);
     event ZKAdded(address indexed user);
 
-    /**
-     * @notice Disable initializers for the implementation (UUPS pattern).
-     */
+    /// @notice Disable initializers for the implementation (UUPS pattern).
     constructor() { _disableInitializers(); }
 
-    /*────────────────── Initializer ──────────────────*/
+    // Initializer
 
-    /**
-     * @notice Initialize the whitelist registry.
-     * @param admin        Admin address (granted roles via RolesCommon).
-     * @param initialRoot  Initial Merkle root accepted for zk proofs.
-     * @param _verifier    ZK verifier contract address.
-     * @param forwarders   Trusted ERC-2771 forwarders (meta-tx).
-     *
-     * @dev Grants `VERIFIER_ROLE` to `admin` by default. Emits `VerifierSet`.
-     */
+    /// @notice Initialize the whitelist registry.
+    /// @param admin Admin address granted hazBase roles.
+    /// @param initialRoot Initial Merkle root accepted for zk proofs.
+    /// @param _verifier ZK verifier contract address.
+    /// @param forwarders Trusted ERC-2771 forwarders for meta-transactions.
+    /// @dev Grants `VERIFIER_ROLE` to `admin` by default and emits `VerifierSet`.
     function initialize(address admin, bytes32 initialRoot, address _verifier, address[] calldata forwarders) external initializer {
         __AccessControl_init();
         __UUPSUpgradeable_init();
@@ -120,93 +115,64 @@ contract Whitelist is
         emit VerifierSet(_verifier);
     }
 
-    /*────────────────── Admin: Basic level ──────────────────*/
+    // Admin: basic level
 
-    /**
-     * @notice Set `user` to `Basic` level.
-     * @param user Address to mark as KYC Basic.
-     *
-     * @dev Only ADMIN_ROLE. Emits `WhitelistUpdated`.
-     */
+    /// @notice Set `user` to the `Basic` KYC level.
+    /// @param user Address to mark as KYC Basic.
+    /// @dev Only ADMIN_ROLE. Emits `WhitelistUpdated`.
     function add(address user) external onlyRole(ADMIN_ROLE) { _set(user, KYCLevel.Basic); }
 
-    /**
-     * @notice Remove `user` from whitelist (level → None).
-     * @param user Address to remove.
-     *
-     * @dev Only ADMIN_ROLE. Emits `WhitelistUpdated`.
-     */
+    /// @notice Remove `user` from the whitelist by setting the level to `None`.
+    /// @param user Address to remove.
+    /// @dev Only ADMIN_ROLE. Emits `WhitelistUpdated`.
     function remove(address user) external onlyRole(ADMIN_ROLE) { _set(user, KYCLevel.None);  }
 
-    /**
-     * @notice Batch set users to `Basic`.
-     * @param u Array of user addresses.
-     *
-     * @dev Only ADMIN_ROLE. Emits `BatchWhitelistUpdated`.
-     *
-     * @custom:reverts too many if `u.length > 5000`
-     */
+    /// @notice Batch set users to the `Basic` KYC level.
+    /// @param u Array of user addresses.
+    /// @dev Only ADMIN_ROLE. Emits `BatchWhitelistUpdated`.
+    /// @custom:reverts too many if `u.length > 5000`
     function addBatch(address[] calldata u) external onlyRole(ADMIN_ROLE) { _batch(u, KYCLevel.Basic);  }
 
-    /**
-     * @notice Batch remove users (set to `None`).
-     * @param u Array of user addresses.
-     *
-     * @dev Only ADMIN_ROLE. Emits `BatchWhitelistUpdated`.
-     *
-     * @custom:reverts too many if `u.length > 5000`
-     */
+    /// @notice Batch remove users by setting their level to `None`.
+    /// @param u Array of user addresses.
+    /// @dev Only ADMIN_ROLE. Emits `BatchWhitelistUpdated`.
+    /// @custom:reverts too many if `u.length > 5000`
     function removeBatch(address[] calldata u) external onlyRole(ADMIN_ROLE) { _batch(u, KYCLevel.None);   }
 
-    /**
-     * @notice Rotate the Merkle root used for ZK verification.
-     * @param newRoot New root.
-     *
-     * @dev Only VERIFIER_ROLE. Emits `RootUpdated`.
-     */
+    /// @notice Rotate the Merkle root used for ZK verification.
+    /// @param newRoot New root.
+    /// @dev Only VERIFIER_ROLE. Emits `RootUpdated`.
     function setRoot(bytes32 newRoot) external whenNotPaused onlyRole(VERIFIER_ROLE) {
         currentRoot = newRoot;
         emit RootUpdated(newRoot);
     }
 
-    /**
-     * @notice Update verifier contract address.
-     * @param v Verifier address (non-zero).
-     *
-     * @dev Only ADMIN_ROLE. Emits `VerifierSet`.
-     * @custom:reverts zero addr if `v == 0`
-     */
+    /// @notice Update the verifier contract address.
+    /// @param v Verifier address.
+    /// @dev Only ADMIN_ROLE. Emits `VerifierSet`.
+    /// @custom:reverts zero addr if `v == 0`
     function setVerifier(address v) external whenNotPaused onlyRole(ADMIN_ROLE) {
         require(v != address(0), "zero addr");
         verifier = IVerifier(v);
         emit VerifierSet(v);
     }
 
-    /*────────────────── Verifier: ZK level ──────────────────*/
+    // Verifier: ZK level
 
-    /**
-     * @notice Add `to` to whitelist at `ZK` level after verifying Groth16 proof.
-     * @param to          Address to mark as ZK level.
-     * @param a,b,c       Proof elements.
-     * @param pubSignals  Public inputs expected by the circuit:
-     *                    - [0] mode (0 == KYC)
-     *                    - [1] Merkle root
-     *                    - [2] nullifier (uniqueness)
-     *                    - [3] address binding (uint160(to))
-     * @dev
-     * - Requires `verifier` set and `currentRoot != 0`.
-     * - Checks mode/root/address equality and unused nullifier.
-     * - Calls external `verifyProof`; on success, nullifier is burned and `_set(to, ZK)` is applied.
-     * - Emits `ZKAdded`.
-     *
-     * @custom:reverts verifier !set    if verifier is unset
-     * @custom:reverts root undefined   if `currentRoot == 0`
-     * @custom:reverts mode != KYC      if pubSignals[0] != 0
-     * @custom:reverts root mismatch    if pubSignals[1] != currentRoot
-     * @custom:reverts addr mismatch    if pubSignals[3] != to
-     * @custom:reverts nullifier used   if nullifier already consumed
-     * @custom:reverts invalid proof    if verifier rejects
-     */
+    /// @notice Add `to` to the whitelist at `ZK` level after verifying a Groth16 proof.
+    /// @param to Address to mark as ZK level.
+    /// @param a Groth16 proof element `a`.
+    /// @param b Groth16 proof element `b`.
+    /// @param c Groth16 proof element `c`.
+    /// @param pubSignals Public inputs expected by the circuit.
+    /// @dev Expects KYC mode, the current Merkle root, an unused nullifier, and an address binding equal to `to`.
+    /// @custom:reverts verifier !set if verifier is unset
+    /// @custom:reverts root undefined if `currentRoot == 0`
+    /// @custom:reverts mode != KYC if pubSignals[0] != 0
+    /// @custom:reverts root mismatch if pubSignals[1] != currentRoot
+    /// @custom:reverts addr mismatch if pubSignals[3] != to
+    /// @custom:reverts nullifier used if the nullifier has already been consumed
+    /// @custom:reverts invalid proof if the verifier rejects the proof
     function addWithVerify(
         address to,
         uint[2] calldata a,
@@ -232,40 +198,31 @@ contract Whitelist is
         emit ZKAdded(to);
     }
 
-    /*────────────────── Public views ──────────────────*/
+    // Public views
 
-    /**
-     * @notice True if `user` is whitelisted at any level.
-     */
+    /// @notice Return true when `user` is whitelisted at any level.
     function isWhitelisted(address user) external view returns (bool) {
         return _kycLevel[user] != KYCLevel.None;
     }
 
-    /**
-     * @notice Return the KYC level for `user`.
-     */
+    /// @notice Return the current KYC level for `user`.
     function kycLevel(address user) external view returns (KYCLevel) {
         return _kycLevel[user];
     }
 
-    /**
-     * @notice Check whether a `nullifier` has already been used.
-     */
+    /// @notice Check whether a nullifier has already been used.
     function usedNullifier(bytes32 nf) external view returns (bool) {
         return _usedNullifier[nf];
     }
 
-    /*────────────────── Internal helpers ──────────────────*/
+    // Internal helpers
 
-    /**
-     * @notice Set user level with downgrade guard.
-     * @param u  User address.
-     * @param lv Target KYC level.
-     *
-     * @dev Reverts if attempting to downgrade from ZK to Basic. Emits `WhitelistUpdated` on change.
-     * @custom:reverts no op                 if new level equals current level
-     * @custom:reverts downgrade not allowed if lv==Basic and current==ZK
-     */
+    /// @notice Set a user level while enforcing the no-downgrade guard.
+    /// @param u User address.
+    /// @param lv Target KYC level.
+    /// @dev Reverts if attempting to downgrade from ZK to Basic and emits `WhitelistUpdated` on change.
+    /// @custom:reverts no op if the new level equals the current level
+    /// @custom:reverts downgrade not allowed if `lv == Basic` and the current level is `ZK`
     function _set(address u, KYCLevel lv) internal {
         require(_kycLevel[u] != lv, "no op");
         if (lv == KYCLevel.Basic && _kycLevel[u] == KYCLevel.ZK) revert("downgrade not allowed");
@@ -273,14 +230,11 @@ contract Whitelist is
         emit WhitelistUpdated(u, lv);
     }
 
-    /**
-     * @notice Batch set levels with 5000 cap and downgrade guard.
-     * @param arr Addresses to update.
-     * @param lv  Level to set.
-     *
-     * @dev Emits `BatchWhitelistUpdated`.
-     * @custom:reverts too many if `arr.length > 5000`
-     */
+    /// @notice Batch set levels with a 5000-entry cap and downgrade guard.
+    /// @param arr Addresses to update.
+    /// @param lv Level to set.
+    /// @dev Emits `BatchWhitelistUpdated`.
+    /// @custom:reverts too many if `arr.length > 5000`
     function _batch(address[] calldata arr, KYCLevel lv) internal {
         require(arr.length <= 5000, "too many");
         for (uint256 i; i < arr.length; ++i) {
@@ -295,36 +249,26 @@ contract Whitelist is
         emit BatchWhitelistUpdated(arr.length, lv);
     }
 
-    /*────────────────── Pausable ──────────────────*/
+    // Pause control
 
-    /**
-     * @notice Pause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Pause state-changing entrypoints; only PAUSER_ROLE.
     function pause() external onlyRole(PAUSER_ROLE){_pause();}
 
-    /**
-     * @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
-     */
+    /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE){_unpause();}
 
     // meta-tx ---------------------------------------------------------------
 
-    /**
-     * @dev ERC-2771 meta-tx sender override.
-     */
+    /// @dev ERC-2771 meta-tx sender override.
     function _msgSender() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(address){return ERC2771ContextUpgradeable._msgSender();}
 
-    /**
-     * @dev ERC-2771 meta-tx data override.
-     */
+    /// @dev ERC-2771 meta-tx data override.
     function _msgData() internal view override(ContextUpgradeable,ERC2771ContextUpgradeable) returns(bytes calldata){return ERC2771ContextUpgradeable._msgData();}
 
-    /*----------- Upgrade authorization -------------*/
+    // Upgrade authorization
 
-    /**
-     * @notice Authorize UUPS upgrade; only ADMIN_ROLE.
-     * @param newImpl Proposed new implementation address (unused; role gate only).
-     */
+    /// @notice Authorize a UUPS upgrade; only ADMIN_ROLE.
+    /// @param newImpl Proposed new implementation address, included for UUPS compatibility.
     function _authorizeUpgrade(address newImpl) internal override onlyRole(ADMIN_ROLE) {}
 
     /// @dev Storage gap for future variable additions.

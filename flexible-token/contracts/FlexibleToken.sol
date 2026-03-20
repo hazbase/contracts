@@ -143,19 +143,34 @@ contract FlexibleToken is
         if (cap_ > 0) require(cap_ >= initialSupply, "cap too low");
         require(decimals_ <= 18, "invalid decimals");
 
+        _initializeBase(name_, symbol_, admin, forwarders);
+        _initializeConfig(cap_, decimals_, transferable_);
+        _initializeRolesAndSupply(admin, treasury, initialSupply);
+    }
+
+    function _initializeBase(
+        string memory name_,
+        string memory symbol_,
+        address admin,
+        address[] calldata forwarders
+    ) private onlyInitializing {
         __ERC20_init(name_, symbol_);
+        __EIP712_init(name_, "1");
         __ERC20Votes_init();
-        __AccessControl_init();
         __Pausable_init();
         __UUPSUpgradeable_init();
-        __ReentrancyGuard_init();
         __ERC2771Context_init(forwarders);
+        __ReentrancyGuard_init();
         __RolesCommon_init(admin);
+    }
 
-        _cap         = cap_;
-        _decimals    = decimals_;
+    function _initializeConfig(uint256 cap_, uint8 decimals_, bool transferable_) private {
+        _cap = cap_;
+        _decimals = decimals_;
         transferable = transferable_;
+    }
 
+    function _initializeRolesAndSupply(address admin, address treasury, uint256 initialSupply) private {
         _grantRole(MINTER_ROLE, admin);
         _grantRole(MINTER_ROLE, treasury);
         if (initialSupply > 0) _mint(treasury, initialSupply);

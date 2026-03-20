@@ -11,14 +11,10 @@ pragma solidity ^0.8.23;
 //    https://hazbase.com
 
 import "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorVotesQuorumFractionUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorCountingSimpleUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorTimelockControlUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
 import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts/governance/utils/IVotes.sol";
-import "@openzeppelin/contracts/utils/math/Math.sol";
 
 import "./extensions/RolesCommon.sol";
 import "./external/oz/metax/ERC2771ContextUpgradeable.sol";
@@ -123,8 +119,6 @@ interface IGovernorBasic {
 
 // Runtime contract that coordinates the two child governors described in the file header above.
 contract MetaGovernor is
-    GovernorVotesQuorumFractionUpgradeable,
-    GovernorCountingSimpleUpgradeable,
     GovernorTimelockControlUpgradeable,
     UUPSUpgradeable,
     ERC2771ContextUpgradeable,
@@ -198,6 +192,7 @@ contract MetaGovernor is
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ERC2771Context_init(forwarders);
+        __ReentrancyGuard_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
 
@@ -245,7 +240,7 @@ contract MetaGovernor is
     )
         public
         pure
-        override(GovernorUpgradeable)
+        override
         returns (uint256)
     {
         revert("Use propose with ProposalType");
@@ -298,6 +293,41 @@ contract MetaGovernor is
     function getSocVotes(address account, uint256 timepoint) external view returns (uint256 votes) {
         votes = soc.getVotes(account, timepoint);
     }
+
+    // Governor compatibility stubs
+
+    /// @notice Meta governor uses child-governor tallies, so quorum is handled externally.
+    function quorum(uint256) public pure override returns (uint256) { return 0; }
+
+    /// @notice Meta governor does not collect votes directly.
+    function hasVoted(uint256, address) public pure override returns (bool) { return false; }
+
+    /// @notice Governor clock defaults to block number for compatibility.
+    function clock() public view override returns (uint48) { return uint48(block.number); }
+
+    /// @notice ERC-6372 clock descriptor for block-number based snapshots.
+    function CLOCK_MODE() public pure override returns (string memory) {
+        return "mode=blocknumber&from=default";
+    }
+
+    /// @notice Counting mode is informational only; child governors perform the actual tallying.
+    function COUNTING_MODE() public pure override returns (string memory) {
+        return "support=bravo&quorum=external";
+    }
+
+    function _quorumReached(uint256) internal pure override returns (bool) { return true; }
+
+    function _voteSucceeded(uint256) internal pure override returns (bool) { return true; }
+
+    function _getVotes(address, uint256, bytes memory) internal pure override returns (uint256) { return 0; }
+
+    function _countVote(
+        uint256,
+        address,
+        uint8,
+        uint256,
+        bytes memory
+    ) internal pure override returns (uint256) { return 0; }
 
     // Finalization
 
@@ -366,7 +396,7 @@ contract MetaGovernor is
     /// @return uint256 Minimal placeholder.
     function votingDelay()
         public pure
-        override(GovernorUpgradeable)
+        override
         returns (uint256)
     { return 1; }
 
@@ -374,20 +404,20 @@ contract MetaGovernor is
     /// @return uint256 Minimal placeholder.
     function votingPeriod()
         public pure
-        override(GovernorUpgradeable)
+        override
         returns (uint256)
     { return 1; }
 
     /// @notice Proposal threshold passthrough.
     function proposalThreshold()
         public view
-        override(GovernorUpgradeable)
+        override
         returns (uint256)
     { return super.proposalThreshold(); }
 
     /// @notice State passthrough to OZ Governor logic (meta does not override).
     function state(uint256 id)
-        public view override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        public view override(GovernorTimelockControlUpgradeable)
         returns (ProposalState)
     {
         return super.state(id);
@@ -396,7 +426,7 @@ contract MetaGovernor is
     /// @notice Whether proposals require queuing (timelock).
     function proposalNeedsQueuing(uint256 proposalId)
         public view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        override(GovernorTimelockControlUpgradeable)
         returns (bool)
     { return super.proposalNeedsQueuing(proposalId); }
 
@@ -409,7 +439,7 @@ contract MetaGovernor is
         bytes32   descriptionHash
     )
         internal
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        override(GovernorTimelockControlUpgradeable)
         returns (uint48)
     { return super._queueOperations(proposalId, targets, values, calldatas, descriptionHash); }
 
@@ -422,7 +452,7 @@ contract MetaGovernor is
         bytes32   descriptionHash
     )
         internal
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        override(GovernorTimelockControlUpgradeable)
     { super._executeOperations(proposalId, targets, values, calldatas, descriptionHash); }
 
     /// @dev Cancel proposal plumbing passthrough.
@@ -433,14 +463,14 @@ contract MetaGovernor is
         bytes32   descriptionHash
     )
         internal
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        override(GovernorTimelockControlUpgradeable)
         returns (uint256)
     { return super._cancel(targets, values, calldatas, descriptionHash); }
 
     /// @dev Timelock executor address resolution.
     function _executor()
         internal view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        override(GovernorTimelockControlUpgradeable)
         returns (address)
     { return super._executor(); }
 

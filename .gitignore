@@ -54,3 +54,6 @@ firebase-debug.log*
 .env.production
 
 /functions/hosting/*
+
+.codex-rwa-write-check
+.codex-write-check

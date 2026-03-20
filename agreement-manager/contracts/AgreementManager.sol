@@ -259,6 +259,7 @@ contract AgreementManager is
     // Initializer
 
     /// @notice Disable initializers in constructor (UUPS pattern).
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
     /// @notice Initialize proxy instance.
@@ -269,9 +270,9 @@ contract AgreementManager is
     function initialize(address admin, address[] calldata forwarders) external initializer {
         __ERC2771Context_init(forwarders);
         __EIP712_init(CONTRACT_TYPE, VERSION);
+        __ReentrancyGuard_init();
         __RolesCommon_init(admin);
         __Pausable_init();
-        __ReentrancyGuard_init();
         __UUPSUpgradeable_init();
     }
 

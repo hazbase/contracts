@@ -15,6 +15,9 @@ build
 */build
 */dist
 */test
+!circuitbreaker-amm/test/
+circuitbreaker-amm/test/*
+!circuitbreaker-amm/test/amm-sdk.integration.ts
 */contracts/test/
 artifacts
 cache

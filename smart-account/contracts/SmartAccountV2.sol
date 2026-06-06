@@ -135,6 +135,12 @@ contract SmartAccountV2 is
     event SessionSafeTargetSet(address indexed target, bool allowed);
     event ImplWhitelisted(address indexed impl, bool allowed);
 
+    /// @dev Lock the implementation contract; clones are initialized via `initialize`.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /// @notice Initializes a freshly cloned account with validator-based ownership.
     /// @dev This function is intended to be called exactly once by the factory during clone creation.
     /// The owner config stays opaque to the account itself; only the validator decides how it is hashed.

@@ -99,6 +99,12 @@ contract KpiRegistry is
 
     // Initializer
 
+    /// @dev Lock the implementation contract; clones are initialized via `initialize`.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /// @notice Initialize the KPI registry.
     /// @param admin Admin address granted hazBase admin roles.
     /// @param mtcAddress Deployed `MultiTrustCredential` contract address.

@@ -97,6 +97,12 @@ contract Splitter is
 
     // Initializer
 
+    /// @dev Lock the implementation contract; clones are initialized via `initialize`.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /// @notice Initialize the splitter with routes and meta-tx forwarders.
     /// @param admin Admin address for RolesCommon (governs roles per your setup).
     /// @param _routes Initial route array (1..10 items, sum of bps = 10,000).
@@ -125,7 +131,7 @@ contract Splitter is
     /// so fee-on-transfer tokens are handled safely before distribution.
     /// @custom:reverts zero amt if `amount == 0`
     /// @custom:reverts no tokens if transfer yields zero balance increase
-    function routeERC20(IERC20 token, uint256 amount) external nonReentrant {
+    function routeERC20(IERC20 token, uint256 amount) external nonReentrant whenNotPaused {
         require(amount > 0, "zero amt");
         uint256 balBefore = token.balanceOf(address(this));
         token.safeTransferFrom(_msgSender(), address(this), amount);
@@ -139,7 +145,7 @@ contract Splitter is
     /// @notice Sweep entire ERC20 balance held by this contract and split by current routes.
     /// @dev Permissionless trigger: anyone can call to distribute already-held balances.
     /// Remainder handling is delegated to `_distributeToken`, where index 0 receives the residue by design.
-    function sweepERC20(IERC20 token) external nonReentrant {
+    function sweepERC20(IERC20 token) external nonReentrant whenNotPaused {
         uint256 bal = token.balanceOf(address(this));
         if (bal == 0) return;
         _distributeToken(token, bal);
@@ -151,7 +157,7 @@ contract Splitter is
     /// @notice Split native ETH across routes.
     /// @dev Calls `_distributeNative(msg.value)` and emits `FeeSplit`.
     /// @custom:reverts zero value if `msg.value == 0`
-    function routeNative() external payable nonReentrant {
+    function routeNative() external payable nonReentrant whenNotPaused {
         require(msg.value > 0, "zero value");
         _distributeNative(msg.value);
         emit FeeSplit(msg.value, address(0), true);
@@ -184,7 +190,7 @@ contract Splitter is
     /// @param amount Amount to sweep (<= pendingNative[dest]).
     /// @dev Only `GOVERNOR_ROLE`. Reuses `_safeNativeSendOrPend` and emits `PendingClaimed`.
     /// @custom:reverts exceed if `amount > pendingNative[dest]`
-    function sweepPendingNative(address dest, uint256 amount) external onlyRole(GOVERNOR_ROLE) nonReentrant {
+    function sweepPendingNative(address dest, uint256 amount) external onlyRole(GOVERNOR_ROLE) nonReentrant whenNotPaused {
         require(pendingNative[dest] >= amount, "exceed");
         pendingNative[dest] -= amount;
         _safeNativeSendOrPend(Route({ dest: dest, bps: 10000, reserveBucket: ReserveBucket.Direct }), amount);
@@ -349,7 +355,7 @@ contract Splitter is
 
     /// @notice Receive hook: auto-distribute directly sent ETH using current routes.
     /// @dev Ignores zero-value transfers or when no routes are configured and emits `FeeSplit` after distribution.
-    receive() external payable {
+    receive() external payable whenNotPaused {
         if (msg.value == 0 || routes.length == 0) return;
         _distributeNative(msg.value);
         emit FeeSplit(msg.value, address(0), true);

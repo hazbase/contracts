@@ -56,7 +56,7 @@ interface IAMMFactory {
  *      * This contract is non-upgradeable and does not implement ERC-2771; therefore no `_authorizeUpgrade` or `_msgSender` overrides here.
  *  - Security / Audit Notes:
  *      * Trusts AMMFactory to return pools with compatible interfaces (CircuitBreakerAMM).
- *      * `_ensureAllowance` resets allowance to 0 then sets `type(uint256).max` to accommodate non-standard ERC20s that require zeroing.
+ *      * `_ensureAllowance` uses SafeERC20.forceApprove to accommodate non-standard ERC20s (e.g. USDT) that require zeroing or do not return a bool.
  *      * Reentrancy: `addLiquidityETH` is `nonReentrant` due to handling ETH and external calls. Swaps intentionally omit `nonReentrant`
  *        since router holds no mutable state and `sendValue` is the last operation after state-free accounting.
  *      * Slippage: Only the final hop checks `amountOutMin`; intermediate hops can vary but the final bound protects the user.
@@ -178,13 +178,13 @@ contract AMMRouter is ReentrancyGuard {
     /// @param spender  Target spender contract (e.g., pool).
     /// @param need     Minimum allowance required.
     ///
-    /// @dev Pattern: set allowance to 0 then to max to support tokens that require zeroing.
-    ///      Grants infinite approval to minimize repeat approvals across multiple swaps.
+    /// @dev Uses SafeERC20.forceApprove, which internally resets to 0 first when needed, so it
+    ///      supports non-standard tokens (e.g. USDT) that revert on a direct non-zero re-approve
+    ///      and tokens that do not return a bool. Grants infinite approval to minimize re-approvals.
     function _ensureAllowance(address token, address spender, uint256 need) internal {
         uint256 cur = IERC20(token).allowance(address(this), spender);
         if (cur < need) {
-            IERC20(token).approve(spender, 0);
-            IERC20(token).approve(spender, type(uint256).max);
+            IERC20(token).forceApprove(spender, type(uint256).max);
         }
     }
 

@@ -387,7 +387,7 @@ contract Staking is
     /// @param token ERC20 to stake.
     /// @param amount Amount to stake.
     /// @dev Enforces cooldown and optional whitelist checks, applies any deposit fee, and emits `Staked`.
-    function stakeERC20(address token, uint256 amount) external onlyWhitelisted nonReentrant updatePool {
+    function stakeERC20(address token, uint256 amount) external onlyWhitelisted whenNotPaused nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         require(amount > 0, "0");
         
@@ -421,7 +421,7 @@ contract Staking is
     /// @param amount Amount to unstake.
     /// @dev If unstaking the reward token itself, ensures on-chain liquidity is sufficient before transfer.
     /// @custom:reverts liquidity shortfall when unstaking rewardToken beyond available liquidity
-    function unstakeERC20(address token, uint256 amount) external nonReentrant updatePool {
+    function unstakeERC20(address token, uint256 amount) external whenNotPaused nonReentrant updatePool {
         if (token == address(rewardToken)) {
             require(_availableLiquidity() >= amount, "liquidity shortfall");
         }
@@ -437,7 +437,7 @@ contract Staking is
     /// @param token ERC721 collection.
     /// @param tokenId Token id to stake.
     /// @dev Enforces cooldown and whitelist checks, then transfers the NFT into the pool.
-    function stakeERC721(address token, uint256 tokenId) external onlyWhitelisted nonReentrant updatePool {
+    function stakeERC721(address token, uint256 tokenId) external onlyWhitelisted whenNotPaused nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         if (cooldownSecs != 0) {
             require(
@@ -454,7 +454,7 @@ contract Staking is
     /// @notice Unstake one ERC721 token.
     /// @param token ERC721 collection.
     /// @param tokenId Token id to unstake.
-    function unstakeERC721(address token, uint256 tokenId) external nonReentrant updatePool {
+    function unstakeERC721(address token, uint256 tokenId) external whenNotPaused nonReentrant updatePool {
         _updatePosition(token, tokenId, 1, false);
         IERC721(token).safeTransferFrom(address(this), _msgSender(), tokenId);
         emit Unstaked(_msgSender(), token, tokenId, 1);
@@ -467,7 +467,7 @@ contract Staking is
     /// @param id Token id to stake.
     /// @param amount Units to stake.
     /// @dev Enforces cooldown and whitelist checks, applies any fee in units, and emits `Staked`.
-    function stakeERC1155(address token, uint256 id, uint256 amount) external onlyWhitelisted nonReentrant updatePool {
+    function stakeERC1155(address token, uint256 id, uint256 amount) external onlyWhitelisted whenNotPaused nonReentrant updatePool {
         require(isArrowed[token], "token not allowed");
         require(amount > 0, "0");
         
@@ -501,7 +501,7 @@ contract Staking is
     /// @param id Token id to unstake.
     /// @param amount Units to unstake.
     /// @dev If unstaking the reward token itself, checks available liquidity before transfer.
-    function unstakeERC1155(address token, uint256 id, uint256 amount) external nonReentrant updatePool {
+    function unstakeERC1155(address token, uint256 id, uint256 amount) external whenNotPaused nonReentrant updatePool {
         if (token == address(rewardToken)) {
             require(_availableLiquidity() >= amount, "liquidity shortfall");
         }
@@ -525,7 +525,7 @@ contract Staking is
     /// @param id Token id, or `0` for ERC20 positions.
     /// @dev Pays the rounded pending reward, updates `reservedReward`, and refreshes `rewardDebt`.
     /// @custom:reverts none if no pending reward remains after rounding
-    function claim(address token, uint256 id) external onlyWhitelisted nonReentrant updatePool {
+    function claim(address token, uint256 id) external onlyWhitelisted whenNotPaused nonReentrant updatePool {
         Position storage pos = _positions[token][id][_msgSender()];
         uint256 pending = _round(_pending(pos));
         require(pending > 0, "none");
@@ -533,6 +533,62 @@ contract Staking is
         pos.rewardDebt = (pos.shares * accRewardPerShare) / 1e18;
         rewardToken.safeTransfer(_msgSender(), pending);
         emit RewardClaimed(_msgSender(), pending);
+    }
+
+    // Emergency withdraw (escape hatch)
+
+    /// @notice Emergency-withdraw staked ERC20 principal WITHOUT claiming rewards, even while paused.
+    /// @param token ERC20 asset previously staked.
+    /// @dev Escape hatch so users can always recover their own principal during an incident. It never
+    /// touches reward accounting (any pending reward is forfeited) and is intentionally NOT gated by
+    /// `whenNotPaused`. It also skips `updatePool` so it keeps working even if the reward math is the
+    /// reason the pool was paused.
+    /// @custom:reverts none if the caller has no position for `token`
+    /// @custom:reverts liquidity shortfall if withdrawing the rewardToken beyond available liquidity
+    function emergencyUnstakeERC20(address token) external nonReentrant {
+        Position storage pos = _positions[token][0][_msgSender()];
+        uint256 amount = pos.shares;
+        require(amount > 0, "none");
+        if (token == address(rewardToken)) {
+            require(_availableLiquidity() >= amount, "liquidity shortfall");
+        }
+        totalShares -= amount;
+        pos.shares = 0;
+        pos.rewardDebt = 0;
+        IERC20(token).safeTransfer(_msgSender(), amount);
+        emit Unstaked(_msgSender(), token, 0, amount);
+    }
+
+    /// @notice Emergency-withdraw a staked ERC721 WITHOUT claiming rewards, even while paused.
+    /// @param token ERC721 collection previously staked.
+    /// @param tokenId Token id to recover.
+    /// @dev Escape hatch: forfeits pending rewards, ignores reward accounting, not gated by `whenNotPaused`.
+    /// @custom:reverts none if the caller has no position for `(token, tokenId)`
+    function emergencyUnstakeERC721(address token, uint256 tokenId) external nonReentrant {
+        Position storage pos = _positions[token][tokenId][_msgSender()];
+        uint256 amount = pos.shares;
+        require(amount > 0, "none");
+        totalShares -= amount;
+        pos.shares = 0;
+        pos.rewardDebt = 0;
+        IERC721(token).safeTransferFrom(address(this), _msgSender(), tokenId);
+        emit Unstaked(_msgSender(), token, tokenId, amount);
+    }
+
+    /// @notice Emergency-withdraw staked ERC1155 units WITHOUT claiming rewards, even while paused.
+    /// @param token ERC1155 collection previously staked.
+    /// @param id Token id to recover.
+    /// @dev Escape hatch: forfeits pending rewards, ignores reward accounting, not gated by `whenNotPaused`.
+    /// @custom:reverts none if the caller has no position for `(token, id)`
+    function emergencyUnstakeERC1155(address token, uint256 id) external nonReentrant {
+        Position storage pos = _positions[token][id][_msgSender()];
+        uint256 amount = pos.shares;
+        require(amount > 0, "none");
+        totalShares -= amount;
+        pos.shares = 0;
+        pos.rewardDebt = 0;
+        IERC1155(token).safeTransferFrom(address(this), _msgSender(), id, amount, "");
+        emit Unstaked(_msgSender(), token, id, amount);
     }
 
     // Scheduled actions API
@@ -556,7 +612,7 @@ contract Staking is
         uint64  delay,
         bool    recurring,
         uint64  interval
-    ) external onlyRole(ADMIN_ROLE) returns (uint256 id) {
+    ) external onlyRole(ADMIN_ROLE) whenNotPaused returns (uint256 id) {
         require(target != address(0), "target=0");
         require(data.length >= 4, "no selector");
         if (recurring) require(interval > 0, "bad interval");
@@ -582,7 +638,7 @@ contract Staking is
     /// @custom:reverts time< if executed too early
     /// @custom:reverts done if already executed
     /// @custom:reverts target not whitelisted if the destination is neither the reward token nor an arrowlisted token
-    function executeAction(uint256 id) external nonReentrant updatePool {
+    function executeAction(uint256 id) external whenNotPaused nonReentrant updatePool {
         require(id < _actions.length, "id");
         Action storage a = _actions[id];
         require(block.timestamp >= a.executeAfter, "time<");

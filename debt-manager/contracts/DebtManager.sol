@@ -549,7 +549,7 @@ contract DebtManager is
     /// @dev Adjusts `requiredPrincipal` by `principalPerUnit * deltaUnits` and updates `cachedSupply`.
     /// @custom:reverts NO_CHANGE if current equals cached
     /// @custom:reverts UNDERFLOW if a negative adjustment would underflow `requiredPrincipal`
-    function notifySupplyChange(uint256 idx) external onlyRole(MINTER_ROLE) {
+    function notifySupplyChange(uint256 idx) external onlyRole(MINTER_ROLE) whenNotPaused {
         Tranche storage t = _tranches[idx];
 
         uint256 cur = t.token.totalSupply(t.classId, t.nonceId);
@@ -613,7 +613,7 @@ contract DebtManager is
     /// @custom:reverts not matured if now < maturity
     /// @custom:reverts defaulted if tranche is already DEFAULTED
     /// @custom:reverts coupon pending if not all coupons are claimable or dust-only within sweep grace
-    function closeTranche(uint256 idx, address to) external nonReentrant onlyRole(MINTER_ROLE) {
+    function closeTranche(uint256 idx, address to) external nonReentrant onlyRole(MINTER_ROLE) whenNotPaused {
         require(to != address(0), "zero to");
         Tranche storage t = _tranches[idx];
         require(block.timestamp >= t.maturity, "not matured");
@@ -655,7 +655,7 @@ contract DebtManager is
     /// @dev Records `_lastFundBlock[idx] = block.number` so payout flows enforce a delay.
     /// @custom:reverts zero if `amount == 0`
     function depositPrincipal(uint256 idx, uint256 amount)
-        external onlyRole(MINTER_ROLE) nonReentrant trancheOpen(idx)
+        external onlyRole(MINTER_ROLE) nonReentrant whenNotPaused trancheOpen(idx)
     {
         Tranche storage t = _tranches[idx];
         require(amount > 0, "zero");

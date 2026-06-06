@@ -112,6 +112,12 @@ contract ReservePool is
 
     // Initializer
 
+    /// @dev Lock the implementation contract; clones are initialized via `initialize`.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /// @notice Initialize the reserve pool.
     /// @param admin Address to be granted admin/guardian/... roles via RolesCommon.
     /// @param router_ AMM router used for buy-backs.
@@ -146,7 +152,7 @@ contract ReservePool is
     /// @param newCooldown New cooldown in seconds (0 < newCooldown < 30 days).
     /// @dev Only `GUARDIAN_ROLE`. Emits `BuyBackCooldownUpdated`.
     /// @custom:reverts invalid cooldown if outside (0, 30 days)
-    function setBuyBackCooldown(uint256 newCooldown) external onlyRole(GUARDIAN_ROLE) {
+    function setBuyBackCooldown(uint256 newCooldown) external onlyRole(GUARDIAN_ROLE) whenNotPaused {
         require(newCooldown > 0 && newCooldown < 30 days, "invalid cooldown");
         buyBackCooldown = newCooldown;
         emit BuyBackCooldownUpdated(newCooldown);
@@ -159,7 +165,7 @@ contract ReservePool is
     /// @param amount Amount to fund (wei for ETH; token units for ERC20).
     /// @dev Caller must have `ROYALTY_ROLE`. This uses `_receiveToken` to collect the asset safely
     /// and emits `LiquidityFunded`.
-    function fundLiquidity(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) {
+    function fundLiquidity(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) whenNotPaused {
         require(token != address(0), "native liquidity disabled");
         _receiveToken(token, amount);
         _tokenBalances[token].liquidity += uint128(amount);
@@ -170,7 +176,7 @@ contract ReservePool is
     /// @param token ERC20 token address or address(0) for native ETH.
     /// @param amount Amount to fund.
     /// @dev Caller must have `ROYALTY_ROLE`. Emits `CompensationFunded`.
-    function fundCompensation(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) {
+    function fundCompensation(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) whenNotPaused {
         _receiveToken(token, amount);
         _tokenBalances[token].compensation += uint128(amount);
         emit CompensationFunded(token, amount);
@@ -196,7 +202,7 @@ contract ReservePool is
         uint256 amountIn,
         uint256 minAmountOut,
         address[] calldata path
-    ) external onlyRole(CIRCUIT_BREAKER_ROLE) nonReentrant returns (uint256 amountOut) {
+    ) external onlyRole(CIRCUIT_BREAKER_ROLE) nonReentrant whenNotPaused returns (uint256 amountOut) {
         require(block.timestamp - lastBuyBackAt[tokenIn] >= buyBackCooldown, "COOLDOWN");
         require(path.length >= 2, "path length");
         require(path[0] == tokenIn, "path[0] != tokenIn");
@@ -235,6 +241,7 @@ contract ReservePool is
         external
         onlyRole(GUARDIAN_ROLE)
         nonReentrant
+        whenNotPaused
     {
         Balances storage bal = _tokenBalances[token];
         require(amount <= bal.compensation, "exceeds compensation reserve");
@@ -251,7 +258,7 @@ contract ReservePool is
     /// @param toCompensation If true, move from liquidity -> compensation; else the opposite.
     /// @dev Only `GUARDIAN_ROLE`. Emits `Sweep`.
     /// @custom:reverts exceeds liquidity/compensation if `amount` exceeds source bucket
-    function sweep(address token, uint256 amount, bool toCompensation) external onlyRole(GUARDIAN_ROLE) {
+    function sweep(address token, uint256 amount, bool toCompensation) external onlyRole(GUARDIAN_ROLE) whenNotPaused {
         Balances storage bal = _tokenBalances[token];
         if (toCompensation) {
             require(amount <= bal.liquidity, "exceeds liquidity");
@@ -332,7 +339,7 @@ contract ReservePool is
 
     /// @notice Accept native ETH and credit it to the compensation bucket.
     /// @dev Emits `CompensationFunded(address(0), msg.value)`.
-    receive() external payable {
+    receive() external payable whenNotPaused {
         _tokenBalances[address(0)].compensation += uint128(msg.value);
         emit CompensationFunded(address(0), msg.value);
     }

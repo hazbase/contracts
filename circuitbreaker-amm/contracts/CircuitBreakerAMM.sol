@@ -179,6 +179,12 @@ contract CircuitBreakerAMM is
 
     // Initializer
 
+    /// @dev Lock the implementation contract; clones are initialized via `initialize`.
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /// @notice Initialize the AMM pair and parameters; mints no liquidity.
     /// @param _token0 Token0 address.
     /// @param _token1 Token1 address.

@@ -211,19 +211,16 @@ describe("@hazbase/amm SDK integration", function () {
     });
     expectPositive(tokenToEth.amountOut, "token to eth amountOut");
 
-    let reverted = false;
-    try {
-      await router.swapExactETHForTokens({
-        amountIn: ethers.parseEther("0.1"),
-        amountOutMin: 1n,
-        path: [wnativeToken.address, tokenA.address],
-        value: ethers.parseEther("0.1"),
-        to: owner.address,
-        deadline: await futureDeadline(),
-      });
-    } catch {
-      reverted = true;
-    }
-    expect(reverted, "current AMMRouter.swapExactETHForTokens requires WNATIVE transferFrom").to.equal(true);
+    // swapExactETHForTokens wraps msg.value and spends the router's OWN WNATIVE,
+    // so it succeeds with only ETH value (no WNATIVE approval / transferFrom from the caller).
+    const ethToToken = await router.swapExactETHForTokens({
+      amountIn: ethers.parseEther("0.1"),
+      amountOutMin: 1n,
+      path: [wnativeToken.address, tokenA.address],
+      value: ethers.parseEther("0.1"),
+      to: owner.address,
+      deadline: await futureDeadline(),
+    });
+    expectPositive(ethToToken.amountOut, "eth to token amountOut");
   });
 });

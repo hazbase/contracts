@@ -103,9 +103,14 @@ contract SmartAccountV2 is
     /// @dev Session permissions are intentionally coarse at the key level and fine-grained through
     /// target/selector allowlists plus value/batch constraints stored in separate mappings.
     struct SessionConfig {
+        // callLimit/usedCalls are NO LONGER ENFORCED. V2 deliberately keeps validateUserOp
+        // side-effect-free, so a per-key call budget can't be enforced there and advertising one was
+        // misleading. They are retained ONLY as reserved fields to preserve the storage layout of any
+        // existing deployments/clones — do not read or rely on them. Session use is bounded by
+        // validUntil + maxValuePerCall + target/selector allowlists.
         uint64 validUntil;
-        uint64 callLimit;
-        uint64 usedCalls;
+        uint64 __reserved0; // (was callLimit) reserved for storage-layout compatibility
+        uint64 __reserved1; // (was usedCalls) reserved for storage-layout compatibility
         uint64 version;
         uint64 maxBatchCalls;
         uint128 maxValuePerCall;
@@ -304,7 +309,6 @@ contract SmartAccountV2 is
     /// Re-granting the same key increments its version so stale allowlists from an older grant are ignored.
     function grantSessionKey(address key, SessionConfig calldata config) external onlySelf {
         require(key != address(0), "key0");
-        require(config.callLimit > 0, "limit0");
         require(config.validUntil > block.timestamp, "expired");
         require(config.maxTotalValuePerUserOp >= config.maxValuePerCall, "value-range");
         if (config.allowBatch) {
@@ -315,8 +319,8 @@ contract SmartAccountV2 is
         _sessionVersions[key] = nextVersion;
         sessionConfigs[key] = SessionConfig({
             validUntil: config.validUntil,
-            callLimit: config.callLimit,
-            usedCalls: 0,
+            __reserved0: 0,
+            __reserved1: 0,
             version: nextVersion,
             maxBatchCalls: config.allowBatch ? config.maxBatchCalls : 0,
             maxValuePerCall: config.maxValuePerCall,
@@ -531,7 +535,7 @@ contract SmartAccountV2 is
 
         address signer = _recoverSessionSigner(userOpHash, sigPayload);
         SessionConfig storage config = sessionConfigs[signer];
-        if (config.validUntil == 0 || config.callLimit == 0) {
+        if (config.validUntil == 0) {
             return SIG_VALIDATION_FAILED;
         }
 

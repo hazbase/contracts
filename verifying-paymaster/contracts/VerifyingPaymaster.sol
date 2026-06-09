@@ -196,4 +196,10 @@ contract VerifyingPaymaster is BasePaymaster {
         paused = false;
         emit PauseUpdated(false);
     }
+
+    /// @notice Disable ownership renunciation. The owner controls deposit/stake withdrawals
+    /// (BasePaymaster.withdrawTo/withdrawStake), so renouncing would permanently freeze those funds.
+    function renounceOwnership() public override {
+        revert("renounce disabled");
+    }
 }

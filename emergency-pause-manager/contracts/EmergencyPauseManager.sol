@@ -151,7 +151,9 @@ contract EmergencyPauseManager is
             (bool ok, bytes memory data) = _targets.at(i).staticcall(
                 abi.encodeWithSignature("paused()")
             );
-            if (!(ok && abi.decode(data, (bool)))) return false;
+            // treat a missing/malformed paused() response as "not paused" rather than
+            // reverting on abi.decode, preserving graceful degradation.
+            if (!ok || data.length < 32 || !abi.decode(data, (bool))) return false;
         }
         return true;
     }

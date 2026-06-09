@@ -195,6 +195,11 @@ contract GenericGovernor is
         if (endTs <= startTs || endTs - startTs > 60 days) revert InvalidTime();
         if (address(defaultStrategy) == address(0)) revert NoStrategy();
 
+        // the proposer must be the caller itself, or supplied by the trusted meta-governor
+        // (proposeChild is META_ROLE-gated and calls this internally). This stops anyone from
+        // borrowing a third party's voting power to clear the threshold or spoofing proposalProposer.
+        require(proposer == _msgSender() || hasRole(META_ROLE, _msgSender()), "proposer-not-authorized");
+
         // check proposal threshold
         uint256 votesThreshold = defaultStrategy.minThreshold();
         if (votesThreshold > 0) {
@@ -433,8 +438,10 @@ contract GenericGovernor is
     /// @notice Add or remove a trusted ERC-2771 forwarder.
     /// @param forwarder Forwarder address.
     /// @param trust True to trust, false to revoke.
-    /// @dev Only ADMIN_ROLE may call.
-    function updateForwarder(address forwarder, bool trust) external onlyRole(ADMIN_ROLE) {
+    /// @dev Gated by onlyGovernance (a passed on-chain proposal), not a plain admin role.
+    /// Trusting a forwarder lets it spoof _msgSender() and thus forge votes, so changing the
+    /// forwarder set must require the same authority as upgrades/strategy changes.
+    function updateForwarder(address forwarder, bool trust) external onlyGovernance {
         ERC2771ContextUpgradeable.updateTrustedForwarder(forwarder, trust);
     }
 

@@ -168,6 +168,7 @@ contract ReservePool is
     function fundLiquidity(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) whenNotPaused {
         require(token != address(0), "native liquidity disabled");
         _receiveToken(token, amount);
+        require(amount <= type(uint128).max, "amount>uint128"); // prevent silent truncation
         _tokenBalances[token].liquidity += uint128(amount);
         emit LiquidityFunded(token, amount);
     }
@@ -178,6 +179,7 @@ contract ReservePool is
     /// @dev Caller must have `ROYALTY_ROLE`. Emits `CompensationFunded`.
     function fundCompensation(address token, uint256 amount) external payable onlyRole(ROYALTY_ROLE) whenNotPaused {
         _receiveToken(token, amount);
+        require(amount <= type(uint128).max, "amount>uint128"); // prevent silent truncation
         _tokenBalances[token].compensation += uint128(amount);
         emit CompensationFunded(token, amount);
     }
@@ -312,7 +314,8 @@ contract ReservePool is
     /// @param amount Amount to send.
     function _sendToken(address token, address to, uint256 amount) internal {
         if (token == address(0)) {
-            payable(to).transfer(amount);
+            (bool ok, ) = payable(to).call{value: amount}(""); // avoid 2300-gas .transfer
+            require(ok, "ETH send failed");
         } else {
             IERC20(token).safeTransfer(to, amount);
         }
@@ -340,6 +343,7 @@ contract ReservePool is
     /// @notice Accept native ETH and credit it to the compensation bucket.
     /// @dev Emits `CompensationFunded(address(0), msg.value)`.
     receive() external payable whenNotPaused {
+        require(msg.value <= type(uint128).max, "value>uint128"); // prevent silent truncation
         _tokenBalances[address(0)].compensation += uint128(msg.value);
         emit CompensationFunded(address(0), msg.value);
     }

@@ -248,15 +248,24 @@ contract AMMRouter is ReentrancyGuard {
         require(path.length >= 2, "path len");
 
         IERC20(path[0]).safeTransferFrom(msg.sender, address(this), amountIn);
+        return _swapPath(amountIn, amountOutMin, path, to);
+    }
 
-        uint256 amt = amountIn;
+    /// @notice Execute the multi-hop swap loop assuming `path[0]` is ALREADY held by the router.
+    /// @dev Shared by the token-in and ETH-in entrypoints. Does NOT pull `path[0]` from anyone, so the
+    /// ETH path can spend the WNATIVE the router just minted instead of pulling more from the caller.
+    function _swapPath(
+        uint256 amountIn,
+        uint256 amountOutMin,
+        address[] calldata path,
+        address to
+    ) internal returns (uint256 amt) {
+        amt = amountIn;
         for (uint256 i; i < path.length - 1; ++i) {
             amt = _swap(path[i], path[i+1], amt);
         }
-
         require(amt >= amountOutMin, "slippage");
         IERC20(path[path.length - 1]).safeTransfer(to, amt);
-        return amt;
     }
 
     /// @notice Swap exact ETH (msg.value) for tokens along a path that starts with WNATIVE.
@@ -266,7 +275,8 @@ contract AMMRouter is ReentrancyGuard {
     /// @param deadline      Unix timestamp after which the tx is invalid.
     /// @return amountOut    Final output amount delivered to `to`.
     ///
-    /// @dev Wraps ETH into WNATIVE, then delegates to `swapExactTokensForTokens`.
+    /// @dev Wraps ETH into WNATIVE, then swaps the router's own WNATIVE along `path` (no double charge).
+    /// @custom:reverts expired      if `block.timestamp > deadline`
     /// @custom:reverts path invalid if `path.length < 2` or `path[0] != WNATIVE`
     function swapExactETHForTokens(
         uint256 amountOutMin,
@@ -274,9 +284,11 @@ contract AMMRouter is ReentrancyGuard {
         address to,
         uint256 deadline
     ) external payable returns (uint256 amountOut) {
+        require(block.timestamp <= deadline, "expired");
         require(path.length >= 2 && path[0] == address(WNATIVE), "path invalid");
-        WNATIVE.deposit{value: msg.value}(); // wrap ETH
-        amountOut = swapExactTokensForTokens(msg.value, amountOutMin, path, to, deadline);
+        WNATIVE.deposit{value: msg.value}(); // wrap ETH; the router now holds msg.value WNATIVE
+        // Spend the router's own freshly-wrapped WNATIVE; do NOT transferFrom the caller for path[0].
+        return _swapPath(msg.value, amountOutMin, path, to);
     }
 
     /// @notice Swap exact tokens for ETH along a path that ends with WNATIVE, then unwrap.

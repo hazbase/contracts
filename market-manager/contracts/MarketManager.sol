@@ -359,6 +359,9 @@ contract MarketManager is
         bytes32 offerId
     ) external whenNotPaused returns (uint256 askId) {
         require(quantity > 0 && price > 0, "zero param");
+        // An ERC-721 ask moves exactly one tokenId regardless of qty, so quantity must be 1;
+        // otherwise a buyer paying price*qty would receive a single NFT (over-payment).
+        require(asset.kind != AssetKind.ERC721 || quantity == 1, "ERC721: quantity must be 1");
         require(endTime == 0 || endTime > block.timestamp, "bad end");
         require(startTime <= block.timestamp + 365 days, "start too far");
         require(royaltyBps <= 10000 && feeBps + royaltyBps <= 10000, "royalty bad");
@@ -569,6 +572,9 @@ contract MarketManager is
     ) internal {
         // Checks
         require(qty > 0 && qty <= v.quantity,                  "qty bad");
+        // An ERC-721 voucher delivers exactly one tokenId, so it must be a single-unit voucher
+        // (prevents paying price*qty for one NFT and an unfulfillable second fill of the same id).
+        require(v.asset.kind != AssetKind.ERC721 || v.quantity == 1, "ERC721: quantity must be 1");
         require(block.timestamp >= v.startTime,                "too early");
         require(v.endTime == 0 || block.timestamp <= v.endTime,"voucher ended");
         require(v.royaltyBps + feeBps <= 10_000,               "bps sum");

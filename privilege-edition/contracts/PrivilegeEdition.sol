@@ -145,6 +145,7 @@ contract PrivilegeEdition is
     event RewardRedeemed(address indexed user, uint256 indexed id, uint256 amount);
 
     /// @notice Disable initializers for the implementation (UUPS pattern).
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
     // Initializer
@@ -291,11 +292,18 @@ contract PrivilegeEdition is
     function mint(address to, uint256 id, uint256 amt, string calldata uri_, uint8 tier, uint64 exp, uint256 rType)
         external onlyRole(MINTER_ROLE) whenNotPaused
     {
+        bool firstMint = _minted[id] == 0;
         _enforceCap(id, amt);
         _rewardType[id] = rType;
-        _editions[id] = EditionInfo({expiresAt: exp, tier: tier, uri: uri_});
+        // Edition metadata (tier/expiry/uri) is established on the FIRST mint of an id and is
+        // immutable thereafter. This keeps the tier used for voting-unit accounting identical to the
+        // tier credited when tokens were minted (preventing _votesBalance underflow / frozen
+        // transfers), and stops a later mint from retroactively shortening expiry for existing holders.
+        if (firstMint) {
+            _editions[id] = EditionInfo({expiresAt: exp, tier: tier, uri: uri_});
+            emit MetadataUpdate(id);
+        }
         _mint(to, id, amt, "");
-        emit MetadataUpdate(id);
     }
 
     // Lazy mint (Voucher)
@@ -318,6 +326,7 @@ contract PrivilegeEdition is
         external nonReentrant whenNotPaused
     {
         if (block.timestamp > v.validUntil) revert VoucherExpired();
+        bool firstMint = _minted[v.id] == 0;
         _enforceCap(v.id, v.amount);
         bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(
             VOUCHER_TYPEHASH,
@@ -333,9 +342,13 @@ contract PrivilegeEdition is
         _rewardType[v.id] = rType;
 
         address to = v.to == address(0) ? _msgSender() : v.to;
-        _editions[v.id] = EditionInfo({expiresAt: v.expiresAt, tier: v.tier, uri: v.uri});
+        // Edition metadata is established on the first mint of an id and immutable thereafter
+        // (see mint()): keeps the voting-unit tier consistent and prevents retroactive expiry changes.
+        if (firstMint) {
+            _editions[v.id] = EditionInfo({expiresAt: v.expiresAt, tier: v.tier, uri: v.uri});
+            emit MetadataUpdate(v.id);
+        }
         _mint(to, v.id, v.amount, "");
-        emit MetadataUpdate(v.id);
     }
 
     /// @notice Read reward type code for id.
@@ -467,7 +480,8 @@ contract PrivilegeEdition is
 
         for (uint256 i; i < len; ++i) {
             uint256 id = ids[i];
-            if (block.timestamp > _editions[id].expiresAt) {
+            uint64 exp = _editions[id].expiresAt;
+            if (exp != 0 && block.timestamp > exp) {   // expiresAt == 0 means "never expires"
                 uint256 bal = balanceOf(_msgSender(), id);
                 if (bal != 0) {
                     amounts[i] = bal;
@@ -500,7 +514,8 @@ contract PrivilegeEdition is
 
         for (uint256 i; i < len; ++i) {
             uint256 id = ids[i];
-            if (block.timestamp > _editions[id].expiresAt) {
+            uint64 exp = _editions[id].expiresAt;
+            if (exp != 0 && block.timestamp > exp) {   // expiresAt == 0 means "never expires"
                 uint256 bal = balanceOf(from, id);
                 if (bal != 0) {
                     amounts[i] = bal;

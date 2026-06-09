@@ -345,6 +345,9 @@ contract ContractFactory is AccessControl, ReentrancyGuard {
     ) internal view {
         ImplementationPolicy memory policy = implementationPolicies[implementationOwner][contractType][version];
         if (!policy.isSet) {
+            // even on the legacy (no-policy) path, require an initializer call so a freshly
+            // cloned proxy can never be left uninitialized (and thus hijacked by a front-runner).
+            require(initData.length >= 4, "init required");
             return;
         }
 

@@ -271,84 +271,52 @@ contract BondToken is
     /// @dev Increments `_snapId`, emits `Snapshot(id)`, and finalizes all queued dirty entries.
     /// Gas cost grows with the number of dirty entries since the previous snapshot.
     function snapshot() external onlyRole(MINTER_ROLE) returns (uint256 id) {
+        // Open a new snapshot epoch only. Historical values are recorded lazily (write-once per
+        // snapshot id) on the FIRST mutation after each snapshot, so a finalized snapshot id can
+        // never be mutated afterwards (fixes the previously-mutable "latest snapshot").
         id = ++_snapId;
         emit Snapshot(id);
-
-        uint256 len = _dirty.length;
-        for (uint256 i; i < len; ++i) {
-            Dirty memory d = _dirty[i];
-
-            if (_snapSupply[d.classId][d.nonceId][id] == 0) {
-                _snapSupply[d.classId][d.nonceId][id] = totalSupply[d.classId][d.nonceId];
-                _snapShots[d.classId][d.nonceId].push(id);
-            }
-
-            uint256[] storage arr = _snapBalances[d.classId][d.nonceId][d.holder];
-            if (arr.length == 0 || arr[arr.length-1] != id) arr.push(id);
-
-            _balAt[d.classId][d.nonceId][d.holder][id] = _balances[d.classId][d.nonceId][d.holder];
-            _dirtyFlag[keccak256(abi.encode(d.classId, d.nonceId, d.holder))] = false;
-        }
-        delete _dirty;
     }
 
-    /// @notice Record or bootstrap snapshot entries on balance change.
-    /// @param classId Class id.
-    /// @param nonceId Nonce id.
-    /// @param holder Account whose balance changed.
-    /// @param newBal New balance to record for the current snapshot id.
-    /// @dev If `_snapId == 0`, this bootstraps snapshot id 1 and records baseline supply.
-    /// The holder is then marked dirty so the next `snapshot()` finalizes balances and supply.
-    function _writeSnapBalance(
-        uint256 classId,
-        uint256 nonceId,
-        address holder,
-        uint256 newBal
-    ) private {
-        if (_snapId == 0) {
-            _snapId = 1;
-            _snapSupply[classId][nonceId][1] = totalSupply[classId][nonceId];
-            _snapShots[classId][nonceId].push(1);
-        }
+    /// @notice Lazily record a holder's PRE-mutation balance under the current snapshot id.
+    /// @dev Write-once per snapshot id: the value stored at id N is the balance as of snapshot N
+    /// (captured on the first balance change after snapshot N), so finalized snapshots are immutable.
+    /// MUST be called BEFORE the balance is mutated. No-op until the first `snapshot()` (id 0).
+    function _snapshotBalance(uint256 classId, uint256 nonceId, address holder) private {
         uint256 id = _snapId;
-        _markDirty(classId, nonceId, holder);
-
-        uint256[] storage arr = _snapBalances[classId][nonceId][holder];
-        if (arr.length == 0 || arr[arr.length-1] != id) arr.push(id);
-        _balAt[classId][nonceId][holder][id] = newBal;
-    }
-
-    /// @notice Track a holder as dirty for the current snapshot id.
-    /// @param classId Class id.
-    /// @param nonceId Nonce id.
-    /// @param holder Account to mark.
-    /// @dev Uses `_dirtyFlag` to avoid duplicate entries in `_dirty`.
-    function _markDirty(
-        uint256 classId,
-        uint256 nonceId,
-        address holder
-    ) private {
-        bytes32 k = keccak256(abi.encode(classId, nonceId, holder));
-        if (_dirtyFlag[k]) return;
-        _dirtyFlag[k] = true;
-        _dirty.push(Dirty(classId, nonceId, holder));
-    }
-
-    /// @notice Binary search helper over ascending snapshot id arrays.
-    /// @param arr Storage array of snapshot ids (ascending).
-    /// @param id Target id (query).
-    /// @return index The greatest snapshot id <= `id`, or 0 if none.
-    /// @dev The returned value is the snapshot id itself, not the array position.
-    function _search(uint256[] storage arr, uint256 id)
-        private view returns (uint256 index)
-    {
-        uint256 l=0; uint256 r=arr.length;
-        while (l < r) {
-            uint256 m = (l + r) >> 1;
-            if (arr[m] <= id) l = m + 1; else r = m;
+        if (id == 0) return;
+        uint256[] storage ids = _snapBalances[classId][nonceId][holder];
+        if (ids.length == 0 || ids[ids.length - 1] < id) {
+            ids.push(id);
+            _balAt[classId][nonceId][holder][id] = _balances[classId][nonceId][holder];
         }
-        if (r == 0) return 0;
-        return arr[r-1];
+    }
+
+    /// @notice Lazily record the PRE-mutation totalSupply under the current snapshot id.
+    /// @dev Write-once per snapshot id; MUST be called BEFORE supply is mutated. No-op until id != 0.
+    function _snapshotSupply(uint256 classId, uint256 nonceId) private {
+        uint256 id = _snapId;
+        if (id == 0) return;
+        uint256[] storage ids = _snapShots[classId][nonceId];
+        if (ids.length == 0 || ids[ids.length - 1] < id) {
+            ids.push(id);
+            _snapSupply[classId][nonceId][id] = totalSupply[classId][nonceId];
+        }
+    }
+
+    /// @notice Binary search: index of the first snapshot id in `arr` that is >= `id`.
+    /// @param arr Storage array of snapshot ids (ascending, strictly increasing).
+    /// @param id Query snapshot id.
+    /// @return idx Index in `[0, arr.length]`; `arr.length` means no recorded id >= `id`.
+    function _upperBoundIndex(uint256[] storage arr, uint256 id)
+        private view returns (uint256 idx)
+    {
+        uint256 lo = 0; uint256 hi = arr.length;
+        while (lo < hi) {
+            uint256 m = (lo + hi) >> 1;
+            if (arr[m] < id) lo = m + 1; else hi = m;
+        }
+        return lo;
     }
 
     /// @notice Historical balance query for a holder at snapshot `id`.
@@ -363,8 +331,11 @@ contract BondToken is
         uint256 nonceId,
         uint256 id
     ) external view returns (uint256) {
-        uint256 snap = _search(_snapBalances[classId][nonceId][holder], id);
-        return _balAt[classId][nonceId][holder][snap];
+        uint256[] storage ids = _snapBalances[classId][nonceId][holder];
+        uint256 idx = _upperBoundIndex(ids, id);
+        // No snapshot recorded at/after `id` => balance unchanged since => current balance.
+        if (idx == ids.length) return _balances[classId][nonceId][holder];
+        return _balAt[classId][nonceId][holder][ids[idx]];
     }
 
     /// @notice Historical totalSupply query at snapshot `id`.
@@ -377,8 +348,10 @@ contract BondToken is
         uint256 nonceId,
         uint256 id
     ) external view returns (uint256) {
-        uint256 snap = _search(_snapShots[classId][nonceId], id);
-        return _snapSupply[classId][nonceId][snap];
+        uint256[] storage ids = _snapShots[classId][nonceId];
+        uint256 idx = _upperBoundIndex(ids, id);
+        if (idx == ids.length) return totalSupply[classId][nonceId];
+        return _snapSupply[classId][nonceId][ids[idx]];
     }
 
     /// @notice Gasless operator approval using an EIP-712 signature.
@@ -430,7 +403,8 @@ contract BondToken is
         onlyRole(MINTER_ROLE)
     {
         require(_classes[classId].data.length == 0, "CLASS_EXISTS");
-        
+        require(data.length != 0, "empty metadata"); // keep existence detectable by data length
+
         for (uint256 i; i < data.length; ++i) _classes[classId].data.push(data[i]);
         classTransferable[classId] = true;
         emit ClassCreated(classId);
@@ -449,7 +423,8 @@ contract BondToken is
     {
         require(_classes[classId].data.length != 0, "CLASS_MISSING");
         require(_nonces[classId][nonceId].data.length == 0, "NONCE_EXISTS");
-        
+        require(data.length != 0, "empty metadata"); // keep existence detectable by data length
+
         for (uint256 i; i < data.length; ++i) _nonces[classId][nonceId].data.push(data[i]);
         emit NonceCreated(classId, nonceId);
     }
@@ -475,10 +450,12 @@ contract BondToken is
         require(_nonces[classId][nonceId].data.length != 0, "NONCE_MISSING");
         _enforceWL(address(0), to);
 
+        _snapshotSupply(classId, nonceId);
+        _snapshotBalance(classId, nonceId, to);
+
         _balances[classId][nonceId][to] += amount;
         totalSupply[classId][nonceId]   += amount;
 
-        _writeSnapBalance(classId, nonceId, to, _balances[classId][nonceId][to]);
         emit Transfer(address(0), to, classId, nonceId, amount);
     }
 
@@ -546,11 +523,12 @@ contract BondToken is
 
         uint256 bal = _balances[classId][nonceId][from];
         require(bal >= amount, "INSUFF_BAL");
+
+        _snapshotBalance(classId, nonceId, from);
+        _snapshotBalance(classId, nonceId, to);
+
         unchecked { _balances[classId][nonceId][from] = bal - amount; }
         _balances[classId][nonceId][to] += amount;
-
-        _writeSnapBalance(classId, nonceId, to, _balances[classId][nonceId][to]);
-        _writeSnapBalance(classId, nonceId, from, _balances[classId][nonceId][from]);
 
         emit Transfer(from, to, classId, nonceId, amount);
     }
@@ -604,11 +582,14 @@ contract BondToken is
     ) internal {
         uint256 bal = _balances[classId][nonceId][from];
         require(bal >= amount, "INSUFF_BAL");
+
+        _snapshotSupply(classId, nonceId);
+        _snapshotBalance(classId, nonceId, from);
+
         unchecked {
             _balances[classId][nonceId][from] = bal - amount;
             totalSupply[classId][nonceId]    -= amount;
         }
-        _writeSnapBalance(classId, nonceId, from, _balances[classId][nonceId][from]);
         emit Redeemed(from, classId, nonceId, amount);
     }
 

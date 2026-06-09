@@ -234,11 +234,13 @@ contract KpiRegistry is
     /// @return bool True when every enabled comparison relation passes.
     /// @dev CompareMask constants are imported from the MTC contract.
     function _compare(uint8 mask, uint256 v, uint256 th) internal pure returns (bool) {
-        bool ok = true;
-        if (mask & CompareMask.GT != 0) ok = ok && (v > th);
-        if (mask & CompareMask.LT != 0) ok = ok && (v < th);
-        if (mask & CompareMask.EQ  != 0) ok = ok && (v == th);
-        return ok;
+        // enabled relations are OR-combined so composite masks behave as intended
+        // (GTE = GT|EQ -> v >= th, LTE = LT|EQ -> v <= th, NE = GT|LT -> v != th). The previous
+        // AND-combination made every composite mask unsatisfiable, so ThresholdHit never fired.
+        if (mask & CompareMask.GT != 0 && v >  th) return true;
+        if (mask & CompareMask.LT != 0 && v <  th) return true;
+        if (mask & CompareMask.EQ != 0 && v == th) return true;
+        return false;
     }
 
     // Pause and upgrade

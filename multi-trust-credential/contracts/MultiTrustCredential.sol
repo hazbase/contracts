@@ -783,7 +783,9 @@ contract MultiTrustCredential is
         emit Slash(tokenId, metricId, penalty);
     }
 
-    /// @notice Read a metric for (tokenId, metricId)
+    /// @notice Read a metric for (tokenId, metricId). By design the stored value is returned even
+    /// after expiry (the reader decides validity); the call still reverts if the metric was revoked.
+    /// Use `isMetricExpired()` / `metricExpiresAt()` to perform the expiry check.
     function getMetric(uint256 tokenId, bytes32 metricId)
         external
         view
@@ -793,6 +795,18 @@ contract MultiTrustCredential is
 
         Metric storage m = _metrics[tokenId][metricId];
         return (m.value, m.leafFull, m.timestamp);
+    }
+
+    /// @notice Expiry accessor. `getMetric` deliberately returns a value even past expiry, so
+    /// expose the expiry here to let readers perform that validity check. `0` means no expiry.
+    function metricExpiresAt(uint256 tokenId, bytes32 metricId) external view returns (uint32) {
+        return _metrics[tokenId][metricId].expiresAt;
+    }
+
+    /// @notice True if the metric has a non-zero expiry that is now in the past.
+    function isMetricExpired(uint256 tokenId, bytes32 metricId) external view returns (bool) {
+        uint32 exp = _metrics[tokenId][metricId].expiresAt;
+        return exp != 0 && block.timestamp > exp;
     }
 
     /// @notice Helper to compute tokenId from subject address

@@ -472,7 +472,6 @@ contract DebtManager is
         uint256 principal = _mulUint(amount, t.principalPerUnit);
         uint256 pay       = _mulBps(principal, t.callPriceBps);
 
-        // TODO: check balance before do this.
         require(t.principalPool >= pay, "PRINCIPAL_INSUFF");
         t.principalPool -= pay;
         _decreaseRequired(t, pay);
@@ -505,6 +504,12 @@ contract DebtManager is
         external nonReentrant whenNotPaused nonZero(amount) principalCovered(idx) noSameBlockFund(idx)
     {
         Tranche storage t = _tranches[idx];
+        // puts may only be exercised while the tranche is live; block CALLED/DEFAULTED/MATURED
+        // (defaulted holders use redeemDefaulted, matured holders use redeemAtMaturity).
+        require(
+            t.status == TrancheStatus.ACTIVE || t.status == TrancheStatus.PUT_NOTICE,
+            "bad status"
+        );
         uint64 notice = t.putNotice[_msgSender()];
         require(notice != 0, "no notice");
         require(block.timestamp >= notice + t.putNoticePeriod, "notice");
@@ -586,7 +591,9 @@ contract DebtManager is
     {
         Tranche storage t = _tranches[idx];
         require(
-            t.status == TrancheStatus.ACTIVE || t.status == TrancheStatus.PUT_NOTICE,
+            t.status == TrancheStatus.ACTIVE ||
+            t.status == TrancheStatus.PUT_NOTICE ||
+            t.status == TrancheStatus.MATURED,   // holders may still redeem after closeTranche
             "bad status"
         );
         require(block.timestamp >= t.maturity, "not matured");
@@ -600,6 +607,35 @@ contract DebtManager is
 
         t.token.burn(_msgSender(), t.classId, t.nonceId, amount);
         t.principalToken.safeTransfer(_msgSender(), pay);
+        emit PrincipalRedeemed(idx, _msgSender(), amount);
+    }
+
+    /// @notice Pro-rata principal recovery for a DEFAULTED tranche.
+    /// @dev A defaulted tranche otherwise freezes all funded principal permanently. This lets a
+    /// holder burn `amount` units and receive their proportional share of the remaining
+    /// principalPool (`principalPool * amount / totalSupply`), so a possibly under-funded pool is
+    /// shared fairly among remaining holders. No `principalCovered` guard since a defaulted pool is
+    /// by definition under-funded.
+    /// @param idx Tranche index.
+    /// @param amount Units to burn and redeem.
+    function redeemDefaulted(uint256 idx, uint256 amount)
+        external nonReentrant whenNotPaused nonZero(amount) noSameBlockFund(idx)
+    {
+        Tranche storage t = _tranches[idx];
+        require(t.status == TrancheStatus.DEFAULTED, "not defaulted");
+
+        uint256 supply = t.token.totalSupply(t.classId, t.nonceId);
+        require(supply > 0, "no supply");
+
+        uint256 pay = (t.principalPool * amount) / supply;   // pro-rata share of remaining pool
+        if (pay != 0) {
+            t.principalPool -= pay;
+            _decreaseRequired(t, pay);
+        }
+
+        t.token.burn(_msgSender(), t.classId, t.nonceId, amount);
+        if (pay != 0) t.principalToken.safeTransfer(_msgSender(), pay);
+
         emit PrincipalRedeemed(idx, _msgSender(), amount);
     }
 
@@ -642,9 +678,17 @@ contract DebtManager is
             }
         }
 
-        // Transfer remaining principal pool for this tranche.
-        uint256 prinBal = t.principalPool;
-        if (prinBal != 0) t.principalToken.safeTransfer(to, prinBal);
+        // do not strip principal owed to un-redeemed holders. Before the sweep grace, only the
+        // genuine surplus (funded beyond requiredPrincipal) is swept and requiredPrincipal stays in
+        // the pool so holders can still redeemAtMaturity() (MATURED is allowed). Only after
+        // maturity + SWEEP_GRACE may any remaining (abandoned) principal be swept.
+        uint256 sweepable = block.timestamp >= t.maturity + SWEEP_GRACE
+            ? t.principalPool
+            : (t.principalPool > t.requiredPrincipal ? t.principalPool - t.requiredPrincipal : 0);
+        if (sweepable != 0) {
+            t.principalPool -= sweepable;
+            t.principalToken.safeTransfer(to, sweepable);
+        }
 
         emit TrancheClosed(idx, to);
     }

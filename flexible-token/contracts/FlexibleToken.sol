@@ -173,6 +173,7 @@ contract FlexibleToken is
     function _initializeRolesAndSupply(address admin, address treasury, uint256 initialSupply) private {
         _grantRole(MINTER_ROLE, admin);
         _grantRole(MINTER_ROLE, treasury);
+        _grantRole(GUARDIAN_ROLE, admin); // enable whitelist config (setWhitelist is GUARDIAN-gated)
         if (initialSupply > 0) _mint(treasury, initialSupply);
     }
 

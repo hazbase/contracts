@@ -82,7 +82,7 @@ contract Staking is
     uint64  public rewardsDuration;
 
     /// @notice Rounding precision for user-visible payouts (≤ 18).
-    uint8   public rewardPrecision = 18;
+    uint8   public rewardPrecision;
 
     // Staking state
 
@@ -193,6 +193,7 @@ contract Staking is
         cooldownSecs   = _cooldownSecs;
         depositFeeBps  = _depositFeeBps;
         feeTreasury    = _feeTreasury;
+        rewardPrecision = 18; // must be set here: an inline field initializer would not apply to proxy storage
 
         for (uint i = 0; i < _initialArrowlist.length; ++i) {
             isArrowed[_initialArrowlist[i]] = true;
@@ -638,7 +639,7 @@ contract Staking is
     /// @custom:reverts time< if executed too early
     /// @custom:reverts done if already executed
     /// @custom:reverts target not whitelisted if the destination is neither the reward token nor an arrowlisted token
-    function executeAction(uint256 id) external whenNotPaused nonReentrant updatePool {
+    function executeAction(uint256 id) external onlyRole(ADMIN_ROLE) whenNotPaused nonReentrant updatePool {
         require(id < _actions.length, "id");
         Action storage a = _actions[id];
         require(block.timestamp >= a.executeAfter, "time<");

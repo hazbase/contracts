@@ -52,6 +52,20 @@ interface IERC1400 {
     ) external view returns (uint256);
 }
 
+/// @dev ERC-1400 operator-scoped partition transfer (escrow pull). Declared separately from
+/// `IERC1400` so the existing `type(IERC1400).interfaceId` detection is unchanged. The issuer must
+/// authorize this contract as an operator for the partition before offering.
+interface IERC1400Operator {
+    function operatorTransferByPartition(
+        bytes32 partition,
+        address from,
+        address to,
+        uint256 value,
+        bytes calldata data,
+        bytes calldata operatorData
+    ) external;
+}
+
 // ERC-3475 / BondToken minimal interface used by the agreement settlement paths.
 interface IERC3475 {
     struct Values { string key; string value; }
@@ -606,7 +620,11 @@ contract AgreementManager is
         address candidate = tokenAddress;
 
         if (candidate.safeSupportsInterface(type(IERC1400).interfaceId)) {
-            IERC1400(tokenAddress).transferByPartition(partition, address(this), amount, "");
+            // Pull the ISSUER's partitioned tokens into escrow. `transferByPartition` is msg.sender-
+            // scoped (it would move THIS contract's own balance, escrowing nothing); an operator-scoped
+            // transfer is required, so the issuer (_msgSender) must have authorized this contract as an
+            // ERC-1400 operator for the partition beforehand (mirrors the ERC-3475 operator path below).
+            IERC1400Operator(tokenAddress).operatorTransferByPartition(partition, _msgSender(), address(this), amount, "", "");
         } else if (candidate.safeSupportsInterface(type(IERC3475).interfaceId)) {
             IERC3475(tokenAddress).operatorTransferFrom(
                 _msgSender(),

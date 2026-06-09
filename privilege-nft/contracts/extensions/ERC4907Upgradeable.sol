@@ -28,7 +28,7 @@ abstract contract ERC4907Upgradeable is Initializable, ERC721Upgradeable, IERC49
     // --------------------------------------------------------------------- //
     // IERC4907                                                               //
     // --------------------------------------------------------------------- //
-    function setUser(uint256 tokenId, address user, uint64 expires) external virtual override {
+    function setUser(uint256 tokenId, address user, uint64 expires) public virtual override {
         address owner = _ownerOf(tokenId);
         require(_isAuthorized(owner, _msgSender(), tokenId), "ERC4907: not owner nor approved");
         _users[tokenId] = UserInfo({user: user, expires: expires});

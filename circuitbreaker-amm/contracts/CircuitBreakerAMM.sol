@@ -94,8 +94,8 @@ contract CircuitBreakerAMM is
 
     /// @dev Oracle observation: timestamp and price in bps (token0/token1 * 1e4).
     struct Observation {
-        uint32  timestamp;
-        uint32  priceBps;
+        uint32   timestamp;
+        uint224  priceBps;  // widened from uint32 (still fits the same 32-byte slot) to avoid silent truncation
     }
     /// @notice Fixed-size ring buffer of observations; head index is `obsIdx`.
     Observation[ORACLE_LEN] public obs;
@@ -246,7 +246,7 @@ contract CircuitBreakerAMM is
         Observation storage o = obs[obsIdx];
         if (block.timestamp - o.timestamp >= 900) {
             obsIdx = uint8((obsIdx + 1) % ORACLE_LEN);
-            obs[obsIdx] = Observation(uint32(block.timestamp), uint32(priceBps));
+            obs[obsIdx] = Observation(uint32(block.timestamp), uint224(priceBps));
         }
     }
 
@@ -264,7 +264,10 @@ contract CircuitBreakerAMM is
         if (pOld == 0) return 0;
 
         uint256 diff = pNew > pOld ? pNew - pOld : pOld - pNew;
-        rvBps = uint32((diff * 1e4) / pOld);   // uint256 → uint32
+        uint256 rv = (diff * 1e4) / pOld;
+        // Clamp instead of truncating: an over-uint32 RV just means "extreme volatility",
+        // which is always >= the (<=10000 bps) breaker thresholds, so the breaker still trips.
+        rvBps = rv > type(uint32).max ? type(uint32).max : uint32(rv);
     }
 
     // Fee and breaker logic
@@ -273,7 +276,10 @@ contract CircuitBreakerAMM is
     /// @param rv Realized volatility in bps.
     /// @return Fee in bps for the current trade.
     function _dynamicFee(uint32 rv) internal view returns (uint32) {
-        return baseFeeBps + (rv * feeAlphaBps) / 1e4;
+        // Widen to uint256 so a large (clamped) RV cannot overflow-revert the multiplication,
+        // and cap the result at 100% (BPS) so quotes stay well-defined under extreme volatility.
+        uint256 fee = uint256(baseFeeBps) + (uint256(rv) * uint256(feeAlphaBps)) / 1e4;
+        return uint32(_min(fee, BPS));
     }
 
     /// @notice Circuit breaker checks for direction, size caps, and non-empty reserves.
@@ -337,7 +343,7 @@ contract CircuitBreakerAMM is
     /// @notice Seed the oracle ring buffer with an initial price.
     /// @param pInit Initial price in bps.
     /// @dev Called on the first liquidity add and fills all 96 slots with the same sample.
-    function _seedOracle(uint32 pInit) internal {
+    function _seedOracle(uint224 pInit) internal {
         for (uint8 i = 0; i < ORACLE_LEN; ++i) {
             obs[i] = Observation(uint32(block.timestamp), pInit);
         }
@@ -398,7 +404,7 @@ contract CircuitBreakerAMM is
     /// @dev Router must transfer optimal amounts to this contract before calling.
     /// @param to Recipient of LP tokens.
     /// @return liquidity Amount of LP minted.
-    function mint(address to) external whenNotPaused returns (uint liquidity) {
+    function mint(address to) external nonReentrant whenNotPaused returns (uint liquidity) {
         (uint128 _r0, uint128 _r1) = getReserves();
         uint balance0 = IERC20Metadata(token0).balanceOf(address(this));
         uint balance1 = IERC20Metadata(token1).balanceOf(address(this));
@@ -411,7 +417,7 @@ contract CircuitBreakerAMM is
             liquidity = _sqrt(amount0 * amount1);
             require(liquidity > 0, "insufficient-liquidity-minted");
             _mint(to, liquidity);
-            _seedOracle(uint32((balance0 * 1e4) / balance1));
+            _seedOracle(uint224((balance0 * 1e4) / balance1));
         } else {
             uint liq0 = (amount0 * _ts) / _r0;
             uint liq1 = (amount1 * _ts) / _r1;
@@ -429,7 +435,7 @@ contract CircuitBreakerAMM is
     /// @param to Recipient of underlying tokens.
     /// @return amount0 Token0 amount sent.
     /// @return amount1 Token1 amount sent.
-    function burn(address to) external whenNotPaused returns (uint amount0, uint amount1) {
+    function burn(address to) external nonReentrant whenNotPaused returns (uint amount0, uint amount1) {
         uint liquidity = balanceOf(address(this));
         require(liquidity > 0, "no-liquidity");
 
@@ -523,10 +529,13 @@ contract CircuitBreakerAMM is
         _circuitChecks(amountIn, true);
         uint32 fee = _dynamicFee(currentRV());
 
+        uint256 balBefore = token0.balanceOf(address(this));
         token0.safeTransferFrom(_msgSender(), address(this), amountIn);
+        uint256 received = token0.balanceOf(address(this)) - balBefore; // actual tokens received (fee-on-transfer safe)
+        require(received > 0, "no-input");
 
-        uint256 feeAmt = amountIn * fee / BPS;
-        uint256 inNet  = amountIn - feeAmt;
+        uint256 feeAmt = received * fee / BPS;
+        uint256 inNet  = received - feeAmt;
 
         uint256 amountOut = _getAmountOut(inNet, pool.reserve0, pool.reserve1);
         require(amountOut >= minOut, "slippage");
@@ -537,10 +546,10 @@ contract CircuitBreakerAMM is
         _updateOracle(uint256(pool.reserve0) * 1e4 / pool.reserve1);
 
         token1.safeTransfer(_msgSender(), amountOut);
-        
+
         _pushFee(token0,  feeAmt);
-        
-        emit Swap(_msgSender(), true, amountIn, amountOut);
+
+        emit Swap(_msgSender(), true, received, amountOut);
 
         return amountOut;
     }
@@ -554,10 +563,13 @@ contract CircuitBreakerAMM is
         _circuitChecks(amountIn, false);
         uint32 fee = _dynamicFee(currentRV());
 
+        uint256 balBefore = token1.balanceOf(address(this));
         token1.safeTransferFrom(_msgSender(), address(this), amountIn);
+        uint256 received = token1.balanceOf(address(this)) - balBefore; // actual tokens received (fee-on-transfer safe)
+        require(received > 0, "no-input");
 
-        uint256 feeAmt = amountIn * fee / BPS;
-        uint256 inNet  = amountIn - feeAmt;
+        uint256 feeAmt = received * fee / BPS;
+        uint256 inNet  = received - feeAmt;
 
         uint256 amountOut = _getAmountOut(inNet, pool.reserve1, pool.reserve0);
         require(amountOut >= minOut, "slippage");
@@ -569,7 +581,7 @@ contract CircuitBreakerAMM is
 
         token0.safeTransfer(_msgSender(), amountOut);
         _pushFee(token1, feeAmt);
-        emit Swap(_msgSender(), false, amountIn, amountOut);
+        emit Swap(_msgSender(), false, received, amountOut);
 
         return amountOut;
     }

@@ -108,6 +108,7 @@ contract AMMFactory is AccessControl {
         address _governor
     ) {
         require(_impl.code.length > 0, "impl-0");
+        require(_governor != address(0) && _splitter != address(0), "zero-addr");
         implementation = _impl;
         splitter       = _splitter;
         defaults       = _defaults;

@@ -26,7 +26,7 @@ import { IVotes } from "@openzeppelin/contracts/governance/utils/IVotes.sol";
  *
  *  - Implementations:
  *      1) OneTokenOneVote      : weight = raw ERC20Votes balance; quorum = pct of total raw supply.
- *      2) OnePersonOneVote     : weight ∈ {0,1} depending on non-zero balance; quorum = pct of total raw supply.
+ *      2) OnePersonOneVote     : weight ∈ {0,1} depending on non-zero balance; quorum = absolute number of distinct yes-voters.
  *      3) QuadraticStake       : weight = sqrt(balance); quorum = pct of sqrt(total supply).
  *      4) ReputationAmplified  : weight = base + k * sqrt(balance); quorum = base + pct * sqrt(total supply).
  *
@@ -112,24 +112,24 @@ contract OneTokenOneVote is IWeightStrategy {
 /// OnePersonOneVote – any non-zero balance counts as 1 vote
 /**
  * @title OnePersonOneVote
- * @notice Voting weight is 1 if holder has non-zero balance at snapshot, else 0; quorum is % of total raw supply.
+ * @notice Voting weight is 1 if holder has non-zero balance at snapshot, else 0; quorum is an absolute number of distinct yes-voters (holder-vote units).
  * @dev Threshold is expressed in "holder-votes" (each holder contributes at most 1).
  */
 contract OnePersonOneVote is IWeightStrategy {
     /// @dev Strategy id: "OPOV".
     bytes4 internal constant _ID = 0x4f504f56; // "OPOV"
 
-    /// @notice Quorum percentage of total raw supply.
-    uint16 public immutable quorumPct;
+    /// @notice Absolute quorum in holder-vote units (number of distinct yes-voters required).
+    uint256 public immutable quorumVotes;
 
     /// @notice Proposer threshold in holder-vote units (1 per eligible holder).
     uint256 public immutable threshold;
 
-    /// @param _pct Quorum numerator as a percentage of total raw supply.
+    /// @param quorumVotes_ Absolute quorum in holder-vote units (distinct yes-voters required).
     /// @param holderThresh Number of unique voters required to propose, measured in holder-votes.
-    constructor(uint16 _pct, uint256 holderThresh){
-        require(_pct>0 && _pct<=100, "pct");
-        quorumPct = _pct;
+    constructor(uint256 quorumVotes_, uint256 holderThresh){
+        require(quorumVotes_ > 0, "quorum0");
+        quorumVotes = quorumVotes_;
         threshold = holderThresh; // 1 holder = 1 weight ⇒ no conversion
     }
 
@@ -143,9 +143,10 @@ contract OnePersonOneVote is IWeightStrategy {
     }
 
     /// @inheritdoc IWeightStrategy
-    /// @dev Quorum is `(total * pct) / 100`.
-    function quorum(uint256 total,uint256) external view override returns(uint256){
-        return (total * quorumPct) / 100;
+    /// @dev Quorum is an absolute number of distinct yes-voters, matching weight()'s {0,1} holder
+    /// units. A percentage of raw token supply would be in incompatible units and unreachable.
+    function quorum(uint256,uint256) external view override returns(uint256){
+        return quorumVotes;
     }
 
     /// @inheritdoc IWeightStrategy

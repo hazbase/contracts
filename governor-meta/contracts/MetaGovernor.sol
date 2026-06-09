@@ -474,10 +474,24 @@ contract MetaGovernor is
         returns (address)
     { return super._executor(); }
 
-    /// @notice Add/remove trusted ERC-2771 forwarders (admin only).
+    /// @dev MetaGovernor finalizes by scheduling directly on the timelock (finalize() ->
+    /// scheduleBatch), so it never runs the base Governor.execute() flow that fills the
+    /// `_governanceCall` deque. The default `_checkGovernance` would then always revert on the empty
+    /// deque when the timelock calls back into a governance-only function (UUPS upgrade / relay /
+    /// updateTimelock), permanently bricking those paths. Authorize by the actual timelock executor
+    /// instead. `msg.sender` (not `_msgSender()`) is used deliberately so a trusted ERC-2771
+    /// forwarder cannot spoof the executor to self-authorize a governance action.
+    function _checkGovernance() internal virtual override {
+        require(msg.sender == _executor(), "Governor: onlyExecutor");
+    }
+
+    /// @notice Add/remove trusted ERC-2771 forwarders.
     /// @param forwarder Forwarder address.
     /// @param trust     True to trust, false to revoke.
-    function updateForwarder(address forwarder, bool trust) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    /// @dev Gated by onlyGovernance (a passed proposal executed via the timelock), not a plain
+    /// admin role. A trusted forwarder can spoof _msgSender() and forge votes, so changing the
+    /// forwarder set must require the same authority as upgrades.
+    function updateForwarder(address forwarder, bool trust) external onlyGovernance {
         ERC2771ContextUpgradeable.updateTrustedForwarder(forwarder, trust);
     }
 

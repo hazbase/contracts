@@ -144,6 +144,7 @@ contract PrivilegeNFT is
     string private _contractURI;
 
     /// @notice Disable initializers for the implementation (UUPS pattern).
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
     // Initializer
@@ -253,7 +254,7 @@ contract PrivilegeNFT is
         string  calldata uri,
         uint64  exp,
         uint8   tier
-    ) external whenNotPaused onlyRole(MINTER_ROLE) returns (uint256 id) {
+    ) external whenNotPaused nonReentrant onlyRole(MINTER_ROLE) returns (uint256 id) {
         _enforceCap();
         id = _mintOne(to, uri, exp, tier);
     }
@@ -360,10 +361,20 @@ contract PrivilegeNFT is
         if (owner == address(0)) revert NonExistentToken();
 
         uint8 old = _members[id].tier;
-        _members[id] = MemberInfo({expiresAt: _members[id].expiresAt, tier: newTier});
+        _members[id].tier = newTier;
 
-        if (newTier > old) _cachedVotes[owner] += (newTier - old);
-        else               _cachedVotes[owner] -= (old - newTier);
+        // Keep both the cached per-account units AND the live ERC721Votes checkpoints (delegate
+        // votes + total supply) in sync with the tier change, so a tier update takes effect for
+        // governance immediately rather than only after the owner re-delegates.
+        if (newTier > old) {
+            uint256 d = uint256(newTier) - uint256(old);
+            _cachedVotes[owner] += d;
+            _transferVotingUnits(address(0), owner, d);
+        } else if (old > newTier) {
+            uint256 d = uint256(old) - uint256(newTier);
+            _cachedVotes[owner] -= d;
+            _transferVotingUnits(owner, address(0), d);
+        }
 
         emit MetadataUpdate(id);
     }
@@ -395,7 +406,7 @@ contract PrivilegeNFT is
     /// @param registry Whitelist contract address (0 to disable checks).
     ///
     /// @dev Only MINTER_ROLE. Checks are enforced in `_beforeTokenTransfer`.
-    function setWhitelist(address registry) external whenNotPaused onlyRole(MINTER_ROLE) {
+    function setWhitelist(address registry) external whenNotPaused onlyRole(ADMIN_ROLE) {
         whitelist = IWhitelist(registry);
     }
 
@@ -462,10 +473,22 @@ contract PrivilegeNFT is
         if (from != address(0)) _beforeTokenTransfer(from, to, tokenId);
 
         uint256 weight = _members[tokenId].tier;
-        if (from != address(0)) _cachedVotes[from] -= weight;
-        if (to   != address(0)) _cachedVotes[to]   += weight;
 
-        return super._update(to, tokenId, auth);
+        // Perform the ERC-721 ownership change via the base ERC721 implementation, deliberately
+        // bypassing ERC721Votes' count-based (1-per-token) voting-unit move. We move the token's
+        // tier weight ourselves below so the delegate/total checkpoints read by getVotes() and
+        // getPastTotalSupply() stay exactly consistent with the tier-weighted _getVotingUnits().
+        address previousOwner = ERC721Upgradeable._update(to, tokenId, auth);
+
+        if (weight != 0) {
+            // Per-account cached units (source of truth for _getVotingUnits on delegation)...
+            if (from != address(0)) _cachedVotes[from] -= weight;
+            if (to   != address(0)) _cachedVotes[to]   += weight;
+            // ...and the matching tier-weighted move in the ERC721Votes checkpoint store.
+            _transferVotingUnits(from, to, weight);
+        }
+
+        return previousOwner;
     }
 
     /// @notice Burn token id and clear membership; updates burn counter.
@@ -546,6 +569,20 @@ contract PrivilegeNFT is
 
     /// @notice Unpause state-changing entrypoints; only PAUSER_ROLE.
     function unpause() external onlyRole(PAUSER_ROLE) { _unpause(); }
+
+    /// @notice Enable/disable soulbound (non-transferable) mode. Without this setter the
+    /// `soulbound` flag could never be turned on, leaving the feature inert.
+    /// @param on True to block transfers between non-zero addresses.
+    function setSoulbound(bool on) external onlyRole(ADMIN_ROLE) {
+        soulbound = on;
+    }
+
+    /// @notice ERC-4907 rental-user assignment, now gated by pause (base setUser had no check).
+    function setUser(uint256 tokenId, address user, uint64 expires)
+        public override whenNotPaused
+    {
+        super.setUser(tokenId, user, expires);
+    }
 
     // meta-tx ---------------------------------------------------------------
 

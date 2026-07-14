@@ -3,7 +3,11 @@
   "version": "1.0.0",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "preflight:rwa-ops-test": "hardhat run ops/deploy-rwa-ops-test.ts --network sepolia",
+    "deploy:rwa-ops-test": "hardhat run ops/deploy-rwa-ops-test.ts --network sepolia",
+    "preflight:rwa-ops-wiring": "hardhat run ops/wire-rwa-ops-test.ts --network sepolia",
+    "wire:rwa-ops-test": "hardhat run ops/wire-rwa-ops-test.ts --network sepolia"
   },
   "keywords": [],
   "author": "IndieSquare Inc <info@hazbase.com>",

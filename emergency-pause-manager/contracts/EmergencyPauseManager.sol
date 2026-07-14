@@ -75,6 +75,7 @@ contract EmergencyPauseManager is
     // Initialization
 
     /// @notice Disable initializers for the logic contract.
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
     /// @notice Initialize the proxy instance.
@@ -82,8 +83,8 @@ contract EmergencyPauseManager is
     /// @param forwarders Trusted ERC-2771 forwarders.
     /// @dev Calls initializers for ERC-2771 context, shared roles, and UUPS.
     function initialize(address admin, address[] calldata forwarders) external initializer {
-        __ERC2771Context_init(forwarders);
         __RolesCommon_init(admin);
+        __ERC2771Context_init(forwarders);
         __UUPSUpgradeable_init();
     }
 

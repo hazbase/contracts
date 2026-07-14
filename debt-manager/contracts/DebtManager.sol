@@ -201,6 +201,7 @@ contract DebtManager is
     // Initializer and UUPS
 
     /// @notice Disable initializers for the implementation contract.
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() { _disableInitializers(); }
 
     /// @notice Initialize the manager proxy.

@@ -19,6 +19,9 @@ cache
 typechain-types
 typechain-types2
 scripts
+!bond-token/scripts/
+bond-token/scripts/*
+!bond-token/scripts/*.ts
 
 # misc
 .DS_Store

@@ -7,6 +7,7 @@ import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 
 import {IOwnerValidator} from "./interfaces/IOwnerValidator.sol";
 import {IOwnerValidatorV2} from "./interfaces/IOwnerValidatorV2.sol";
+import "./EntryPointStakeController.sol";
 
 /**
  * @title PasskeyOwnerValidatorV3
@@ -19,7 +20,7 @@ import {IOwnerValidatorV2} from "./interfaces/IOwnerValidatorV2.sol";
  *   the trusted authorizer without changing future predicted account addresses.
  * - Ownership should be assigned to an operational Safe/timelock rather than an EOA.
  */
-contract PasskeyOwnerValidatorV3 is IOwnerValidatorV2, Ownable2Step {
+contract PasskeyOwnerValidatorV3 is IOwnerValidatorV2, Ownable2Step, EntryPointStakeController {
     using ECDSA for bytes32;
 
     /// @dev Domain used when the backend authorizer signs approval for an ERC-4337 user operation.
@@ -47,6 +48,10 @@ contract PasskeyOwnerValidatorV3 is IOwnerValidatorV2, Ownable2Step {
         require(newAuthorizer != previousAuthorizer, "authorizer-same");
         authorizer = newAuthorizer;
         emit AuthorizerChanged(previousAuthorizer, newAuthorizer);
+    }
+
+    function _checkEntryPointStakeOwner() internal view override {
+        _checkOwner();
     }
 
     /// @inheritdoc IOwnerValidator

@@ -1,0 +1,70 @@
+{
+  "schema": "hazama-governance-migration/v1",
+  "timelock": "0xb1a9564A44BE24b4c0978d3F54D084baFa5a76C9",
+  "pauseGuard": "0xaEdc6740C05A9AeF72d41A22a6d53C9775da45bD",
+  "targets": [
+    {
+      "name": "GenericRwaBackingLockManager",
+      "address": "0x8780a4024f9E2D734d55F38294C2c6a43E22f1C9",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x9425E84f751970c27DC889a21C270712D131B20a",
+      "revokeLegacyRoles": [
+        "CONSUMER_ROLE",
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    },
+    {
+      "name": "HazamaRwaReleaseFinalizerV2",
+      "address": "0xE93f1E8093790EbE08dd80528F303f6ddDfff7b8",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x9425E84f751970c27DC889a21C270712D131B20a",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    },
+    {
+      "name": "GenericRwaRedemptionManager",
+      "address": "0x680ce8045102127ABf6ae317B3c112598eC0B2e4",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x9425E84f751970c27DC889a21C270712D131B20a",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    },
+    {
+      "name": "HazamaRwaRedemptionFinalizer",
+      "address": "0xC3Ef86B16964cE1d81f427532666D11bc4D43F4C",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x9425E84f751970c27DC889a21C270712D131B20a",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    }
+  ]
+}

@@ -295,6 +295,50 @@ describe("SmartAccountV2 bundler-safe validation", function () {
     ).to.equal(packValidationData(false, BigInt(validUntil), BigInt(validAfter)));
   });
 
+  it("lets stakable factory and validator owners fund EntryPoint stake records", async function () {
+    const [initialAuthorizer, owner, stranger, safe, entryPoint] = await ethers.getSigners();
+    const stakeManager = await ethers.deployContract("MockStakeManager");
+    const accountImpl = await ethers.deployContract("SmartAccountV2");
+    const factory = await ethers.deployContract("AccountFactoryV3", [
+      accountImpl.target,
+      entryPoint.address,
+      safe.address,
+      owner.address,
+    ]);
+    const validator = await ethers.deployContract("PasskeyOwnerValidatorV3", [
+      initialAuthorizer.address,
+      owner.address,
+    ]);
+
+    const stakeAmount = ethers.parseEther("0.05");
+    const depositAmount = ethers.parseEther("0.01");
+
+    await expect(
+      factory.connect(stranger).addEntryPointStake(stakeManager.target, 86_400, { value: stakeAmount }),
+    ).to.be.reverted;
+    await expect(
+      validator.connect(stranger).addEntryPointStake(stakeManager.target, 86_400, { value: stakeAmount }),
+    ).to.be.reverted;
+
+    await expect(
+      factory.connect(owner).addEntryPointStake(stakeManager.target, 86_400, { value: stakeAmount }),
+    ).to.emit(factory, "EntryPointStakeAdded").withArgs(stakeManager.target, stakeAmount, 86_400);
+    await expect(
+      validator.connect(owner).addEntryPointStake(stakeManager.target, 86_400, { value: stakeAmount }),
+    ).to.emit(validator, "EntryPointStakeAdded").withArgs(stakeManager.target, stakeAmount, 86_400);
+    await expect(
+      factory.connect(owner).addEntryPointDeposit(stakeManager.target, { value: depositAmount }),
+    ).to.emit(factory, "EntryPointDepositAdded").withArgs(stakeManager.target, depositAmount);
+
+    const factoryInfo = await stakeManager.stakeInfo(factory.target);
+    const validatorInfo = await stakeManager.stakeInfo(validator.target);
+    expect(factoryInfo.stake).to.equal(stakeAmount);
+    expect(factoryInfo.deposit).to.equal(depositAmount);
+    expect(factoryInfo.unstakeDelaySec).to.equal(86_400);
+    expect(validatorInfo.stake).to.equal(stakeAmount);
+    expect(validatorInfo.unstakeDelaySec).to.equal(86_400);
+  });
+
   it("keeps factory account creation deterministic without factory replay storage writes", async function () {
     const fixture = await deployFixture();
     const factory = await ethers.deployContract("AccountFactoryV2", [

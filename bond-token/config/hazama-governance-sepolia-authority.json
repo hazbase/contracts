@@ -1,0 +1,86 @@
+{
+  "schema": "hazama-governance-authority/v1",
+  "chainId": "11155111",
+  "stage": "timelock-controlled",
+  "legacyAdmin": "0x9425E84f751970c27DC889a21C270712D131B20a",
+  "targets": [
+    {
+      "name": "GenericRwaBackingLockManager",
+      "address": "0x8780a4024f9E2D734d55F38294C2c6a43E22f1C9",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyRoles": [
+        { "role": "DEFAULT_ADMIN_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "LOCKER_ROLE", "disposition": "retain", "expected": true },
+        { "role": "RELEASER_ROLE", "disposition": "absent", "expected": false },
+        { "role": "CONSUMER_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "PAUSER_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "HAZAMA_APPROVER_ADMIN_ROLE", "disposition": "revoke", "expected": false }
+      ],
+      "operationalBindings": [
+        {
+          "role": "RELEASER_ROLE",
+          "account": "0xE93f1E8093790EbE08dd80528F303f6ddDfff7b8",
+          "expected": true,
+          "purpose": "Permissionless attested timeout-release finalizer"
+        }
+      ]
+    },
+    {
+      "name": "HazamaRwaReleaseFinalizerV2",
+      "address": "0xE93f1E8093790EbE08dd80528F303f6ddDfff7b8",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyRoles": [
+        { "role": "DEFAULT_ADMIN_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "PAUSER_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "HAZAMA_APPROVER_ADMIN_ROLE", "disposition": "revoke", "expected": false }
+      ]
+    },
+    {
+      "name": "GenericRwaRedemptionManager",
+      "address": "0x680ce8045102127ABf6ae317B3c112598eC0B2e4",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyRoles": [
+        { "role": "DEFAULT_ADMIN_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "RECORDER_ROLE", "disposition": "absent", "expected": false },
+        { "role": "PAUSER_ROLE", "disposition": "revoke", "expected": false }
+      ],
+      "operationalBindings": [
+        {
+          "role": "RECORDER_ROLE",
+          "account": "0xC3Ef86B16964cE1d81f427532666D11bc4D43F4C",
+          "expected": true,
+          "purpose": "Permissionless attested redemption finalizer"
+        }
+      ]
+    },
+    {
+      "name": "HazamaRwaRedemptionFinalizer",
+      "address": "0xC3Ef86B16964cE1d81f427532666D11bc4D43F4C",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyRoles": [
+        { "role": "DEFAULT_ADMIN_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "PAUSER_ROLE", "disposition": "revoke", "expected": false },
+        { "role": "HAZAMA_APPROVER_ADMIN_ROLE", "disposition": "revoke", "expected": false }
+      ]
+    }
+  ]
+}

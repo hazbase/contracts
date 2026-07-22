@@ -1,0 +1,122 @@
+{
+  "schema": "hazama-governance-deployment-record/v1",
+  "chainId": "11155111",
+  "safeVersion": "1.4.1",
+  "safeSingleton": "0x41675C099F32341bf84BFc5382aF534df5C7461a",
+  "safeProxyFactory": "0x4e1DCf7AD4e460CfD30791CCC4F9c8a4f820ec67",
+  "safeFallbackHandler": "0xfd0732Dc9E303f09fCEf3a7388Ad10A83459Ec99",
+  "owners": [
+    "0x843836126A825EDa820F583535a349A71a02319e",
+    "0xc07801C00862578597801DdD616AD582D2e23989",
+    "0xe1defE5dFb9cD2E694454a230B23B4c1D266f66A"
+  ],
+  "threshold": 2,
+  "ownerCustody": "GCP Cloud HSM secp256k1, same-project Sepolia bootstrap",
+  "governanceSafe": {
+    "address": "0xa0Bb691C533647957Ec33cE8331665a80947056B",
+    "deploymentTx": "0xcf2cecb15527b329213e8f75be9ad9aad0977ed5f01b220767069ad51d20d4cf"
+  },
+  "emergencySafe": {
+    "address": "0x37C79AA1f534Df85E75bf705064Be0bdB1437070",
+    "deploymentTx": "0x0b1d69b33232fbee31cb6c175882e401079b958d1637be44a07fa25fc462a998"
+  },
+  "timelock": {
+    "address": "0xb1a9564A44BE24b4c0978d3F54D084baFa5a76C9",
+    "minDelaySeconds": 3600,
+    "publicExecutor": true,
+    "deploymentTx": "0xaa8a1c1ae3c7810e035703922beb60487fe66bd7f760d047a8e6500a83dfb781"
+  },
+  "emergencyPauseGuard": {
+    "address": "0xaEdc6740C05A9AeF72d41A22a6d53C9775da45bD",
+    "deploymentTx": "0xbe52cbd728bf61881d09bb2260b6513a63cc91e7890ebd9c30cc3c54dbba1ee3"
+  },
+  "migration": {
+    "stage": "timelock-controlled",
+    "manifestHash": "0x0d3a7b98971f4ad00dd3c4c174b312a8a282163afd3be3b47bb9ae5e4b30d0bb",
+    "legacyRolesRevoked": true,
+    "finalizedAt": "2026-07-17T08:23:00.000Z",
+    "finalizeTransactions": [
+      {
+        "target": "GenericRwaBackingLockManager",
+        "role": "PAUSER_ROLE",
+        "transactionHash": "0xce20917d1fde6e95cb3297019738d25eb4718899bf4410e682def1839fcdbf9b",
+        "blockNumber": 11290566
+      },
+      {
+        "target": "GenericRwaBackingLockManager",
+        "role": "HAZAMA_APPROVER_ADMIN_ROLE",
+        "transactionHash": "0x59bee4805bdda0fddec98955d4892962a99cb1fd53b498cac1e6712502ae4766",
+        "blockNumber": 11290567
+      },
+      {
+        "target": "GenericRwaBackingLockManager",
+        "role": "CONSUMER_ROLE",
+        "transactionHash": "0x353fbf0f71859af77c9f844949fe5f921dd8d99b99c79f7c96189d38a7ee28bc",
+        "blockNumber": 11290568
+      },
+      {
+        "target": "GenericRwaBackingLockManager",
+        "role": "DEFAULT_ADMIN_ROLE",
+        "transactionHash": "0x8fbebe04b1c03a8cc81c06bebae2e8e1c0b9b4a18c74bd05bea90148325f1137",
+        "blockNumber": 11290569
+      },
+      {
+        "target": "HazamaRwaReleaseFinalizerV2",
+        "role": "PAUSER_ROLE",
+        "transactionHash": "0x4858f97b4be7d190f2224fb12d8ed9ee90112905dcdb3ee3aa4fe706cbb87d3c",
+        "blockNumber": 11290570
+      },
+      {
+        "target": "HazamaRwaReleaseFinalizerV2",
+        "role": "HAZAMA_APPROVER_ADMIN_ROLE",
+        "transactionHash": "0xe640739ab55621cece080264a08ab62d911947812d499c9648cc216b8a4864f7",
+        "blockNumber": 11290571
+      },
+      {
+        "target": "HazamaRwaReleaseFinalizerV2",
+        "role": "DEFAULT_ADMIN_ROLE",
+        "transactionHash": "0xa0ec9cd6aba1233b9b36c7c9382e7e3567cc9967b1cbb0fe7911237b490efccf",
+        "blockNumber": 11290572
+      },
+      {
+        "target": "GenericRwaRedemptionManager",
+        "role": "PAUSER_ROLE",
+        "transactionHash": "0xded1b8bdaf5763afdc8fb3e353454281b5be7f7bc0250e28f1c2e75708ac4922",
+        "blockNumber": 11290573
+      },
+      {
+        "target": "GenericRwaRedemptionManager",
+        "role": "DEFAULT_ADMIN_ROLE",
+        "transactionHash": "0xc7ec0d3caa9b167577ae24e7ddf74d4d68e5c26665b608eee148adea0321b46c",
+        "blockNumber": 11290574
+      },
+      {
+        "target": "HazamaRwaRedemptionFinalizer",
+        "role": "PAUSER_ROLE",
+        "transactionHash": "0x48a4b13b461bd7979520066eecaddc79f3f78cea6def567d1761c9b5a373a54f",
+        "blockNumber": 11290575
+      },
+      {
+        "target": "HazamaRwaRedemptionFinalizer",
+        "role": "HAZAMA_APPROVER_ADMIN_ROLE",
+        "transactionHash": "0xf64cc9be2eb2d07c5f63b79912bdd8469f961b2f9568e9fc72888180a1926fa1",
+        "blockNumber": 11290576
+      },
+      {
+        "target": "HazamaRwaRedemptionFinalizer",
+        "role": "DEFAULT_ADMIN_ROLE",
+        "transactionHash": "0x0f76c3df564d0720e8d01b78fa43f5b57308a311059456ba2931f03efcd7cceb",
+        "blockNumber": 11290577
+      }
+    ]
+  },
+  "proof": {
+    "operationId": "0x71e03372ad113a6d61e91ff1df7fab6fb2839e64a403189359a86fa8d0655954",
+    "scheduleTx": "0xcc2ed5f17f89a731f5b410a83ae871c50876358ead8101420ab0ace01ba6d27a",
+    "readyAtUnix": 1784276256,
+    "executed": true,
+    "executionTx": "0xb022ff319e053b9b2ee044786084657cf33ad48d42ed547f3688e03c3a9fd485",
+    "executionBlock": 11290554,
+    "executedAt": "2026-07-17T08:17:48.000Z"
+  }
+}

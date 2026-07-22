@@ -27,13 +27,19 @@ function id(value: string) {
   return ethers.keccak256(ethers.toUtf8Bytes(value));
 }
 
+async function futureExpiry(offsetSeconds = 1800n) {
+  const block = await ethers.provider.getBlock('latest');
+  if (!block) throw new Error('Latest block is unavailable');
+  return BigInt(block.timestamp) + offsetSeconds;
+}
+
 describe('RwaBackingLockManager', function () {
   it('locks exact BondToken backing into custody for an order', async function () {
     const { backingOwner, bond, manager } = await deployBondFixture();
     const orderId = id('order-1');
     const liquidAssetId = id('liquid-rwa-asset');
     const termsHash = id('terms-1');
-    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 1800);
+    const expiresAt = await futureExpiry();
 
     await expect(
       manager.lock(
@@ -81,7 +87,7 @@ describe('RwaBackingLockManager', function () {
 
   it('rejects duplicate order ids', async function () {
     const { backingOwner, bond, manager } = await deployBondFixture();
-    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 1800);
+    const expiresAt = await futureExpiry();
 
     await manager.lock(
       id('order-duplicate'),
@@ -114,7 +120,7 @@ describe('RwaBackingLockManager', function () {
     const { backingOwner, bond, manager } = await deployBondFixture();
     const orderId = id('order-release');
     const reasonCode = id('payment-expired');
-    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 1800);
+    const expiresAt = await futureExpiry();
 
     await manager.lock(
       orderId,
@@ -149,7 +155,7 @@ describe('RwaBackingLockManager', function () {
     const { backingOwner, bond, manager } = await deployBondFixture();
     const orderId = id('order-consume');
     const deliveryTxid = id('liquid-delivery-txid');
-    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 1800);
+    const expiresAt = await futureExpiry();
 
     await manager.lock(
       orderId,
@@ -183,7 +189,7 @@ describe('RwaBackingLockManager', function () {
 
   it('enforces roles and pause controls', async function () {
     const { backingOwner, other, bond, manager } = await deployBondFixture();
-    const expiresAt = BigInt(Math.floor(Date.now() / 1000) + 1800);
+    const expiresAt = await futureExpiry();
 
     await expect(
       manager.connect(other).lock(

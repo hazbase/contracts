@@ -1,0 +1,72 @@
+{
+  "schema": "hazama-governance-migration/v1",
+  "timelock": "0x0000000000000000000000000000000000000001",
+  "pauseGuard": "0x0000000000000000000000000000000000000002",
+  "targets": [
+    {
+      "name": "GenericRwaBackingLockManager",
+      "address": "0x0000000000000000000000000000000000000011",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x0000000000000000000000000000000000000099",
+      "revokeLegacyRoles": [
+        "CONSUMER_ROLE",
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE",
+        "RELEASER_ROLE"
+      ]
+    },
+    {
+      "name": "HazamaRwaReleaseFinalizerV2",
+      "address": "0x0000000000000000000000000000000000000012",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x0000000000000000000000000000000000000099",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    },
+    {
+      "name": "GenericRwaRedemptionManager",
+      "address": "0x0000000000000000000000000000000000000013",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x0000000000000000000000000000000000000099",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "PAUSER_ROLE",
+        "RECORDER_ROLE"
+      ]
+    },
+    {
+      "name": "HazamaRwaRedemptionFinalizer",
+      "address": "0x0000000000000000000000000000000000000014",
+      "timelockRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ],
+      "pauseGuardRole": "PAUSER_ROLE",
+      "legacyAdmin": "0x0000000000000000000000000000000000000099",
+      "revokeLegacyRoles": [
+        "DEFAULT_ADMIN_ROLE",
+        "HAZAMA_APPROVER_ADMIN_ROLE",
+        "PAUSER_ROLE"
+      ]
+    }
+  ]
+}

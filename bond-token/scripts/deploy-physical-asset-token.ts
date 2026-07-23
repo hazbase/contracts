@@ -1,6 +1,7 @@
 import { ethers } from "hardhat";
 
 const factoryAbi = [
+  "function setImplementation(bytes32 contractType,address impl)",
   "function setImplementationWithPolicy(bytes32 contractType,address impl,bool cloneable,bool initRequired,bytes4 initSelector)",
   "function deployContract(address implementationOwner,bytes32 contractType,bytes initData) returns (address proxy)",
   "event ContractDeployed(address indexed implementationOwner,bytes32 indexed contractType,address indexed proxy,address deployer)",
@@ -32,23 +33,43 @@ async function main() {
   const initializerSelector = tokenFactory.interface.getFunction("initialize")!.selector;
   const factory = new ethers.Contract(factoryAddress, factoryAbi, signer);
 
-  let implementationAddress: string | null = null;
+  let implementationAddress = optionalAddress("PHYSICAL_ASSET_IMPLEMENTATION_ADDRESS");
+  let registrationMode: "policy" | "legacy" | null = null;
   let implementationOwner = String(process.env.IMPLEMENTATION_OWNER ?? "").trim();
   if (publishImplementation) {
-    const implementation = await tokenFactory.deploy();
-    await implementation.waitForDeployment();
-    implementationAddress = await implementation.getAddress();
+    if (implementationAddress === ethers.ZeroAddress) {
+      const implementation = await tokenFactory.deploy();
+      await implementation.waitForDeployment();
+      implementationAddress = await implementation.getAddress();
+    } else if ((await ethers.provider.getCode(implementationAddress)) === "0x") {
+      throw new Error("PHYSICAL_ASSET_IMPLEMENTATION_ADDRESS does not contain contract code");
+    }
     implementationOwner = signer.address;
-    const registration = await factory.setImplementationWithPolicy(
-      contractType,
-      implementationAddress,
-      true,
-      true,
-      initializerSelector,
-    );
+    let registration;
+    try {
+      await factory.setImplementationWithPolicy.staticCall(
+        contractType,
+        implementationAddress,
+        true,
+        true,
+        initializerSelector,
+      );
+      registration = await factory.setImplementationWithPolicy(
+        contractType,
+        implementationAddress,
+        true,
+        true,
+        initializerSelector,
+      );
+      registrationMode = "policy";
+    } catch {
+      registration = await factory.setImplementation(contractType, implementationAddress);
+      registrationMode = "legacy";
+    }
     await registration.wait();
   } else {
     implementationOwner = ethers.getAddress(requiredText("IMPLEMENTATION_OWNER"));
+    implementationAddress = ethers.ZeroAddress;
   }
 
   const tenantKeyInput = requiredText("PHYSICAL_ASSET_TENANT_KEY");
@@ -91,7 +112,8 @@ async function main() {
     chainId: (await ethers.provider.getNetwork()).chainId.toString(),
     contractType,
     implementationOwner,
-    implementationAddress,
+    implementationAddress: implementationAddress === ethers.ZeroAddress ? null : implementationAddress,
+    registrationMode,
     physicalAssetToken: tokenAddress,
     tenantKey,
   }, null, 2));

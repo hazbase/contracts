@@ -4,6 +4,7 @@
   "main": "index.js",
   "scripts": {
     "test": "hardhat test",
+    "physical-asset:deploy": "hardhat run scripts/deploy-physical-asset-token.ts",
     "governance:preflight": "hardhat run scripts/audit-hazama-governance-authority.ts",
     "governance:deploy-safes": "hardhat run scripts/deploy-hazama-safe-multisigs.ts",
     "governance:deploy": "hardhat run scripts/deploy-hazama-governance.ts",

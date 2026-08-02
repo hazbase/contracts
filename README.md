@@ -75,6 +75,7 @@ The system is decomposed into layers:
 - **ContractFactory.sol** — Generic factory to deploy controlled instances (e.g., via minimal proxies).  
 - **MarketManager.sol** — Coordinator for market lifecycles, listings, or asset onboarding.  
 - **AgreementManager.sol** — Agreement/escrow workflows to model bilateral/multilateral commitments.  
+- **PooledTokenEscrow.sol** — Many-to-one ERC-20 escrow with late beneficiary assignment and contributor pull refunds.
 - **DebtManager.sol** — Debt instrument primitives including optional put/call mechanisms.  
 
 ## 5. Getting Started <a id="getting-started"></a>

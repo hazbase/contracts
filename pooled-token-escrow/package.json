@@ -1,0 +1,25 @@
+{
+  "name": "pooled-token-escrow",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "typecheck": "hardhat compile && tsc --noEmit",
+    "coverage": "hardhat coverage",
+    "implementation:publish": "hardhat run scripts/publish-implementation.ts",
+    "size": "hardhat size-contracts"
+  },
+  "author": "IndieSquare Inc <info@hazbase.com>",
+  "license": "Apache-2.0",
+  "description": "Many-to-one pooled ERC-20 escrow with authorized beneficiary assignment and pull refunds.",
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^6.0.0",
+    "@openzeppelin/contracts": "5.3.0",
+    "@openzeppelin/contracts-upgradeable": "5.3.0",
+    "hardhat": "^2.25.0",
+    "hardhat-contract-sizer": "^2.10.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.8.3"
+  }
+}
